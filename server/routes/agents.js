@@ -3,6 +3,7 @@ const db = require('../db');
 const kollect = require('../lib/kollect');
 const ai = require('../lib/aiTasks');
 const sarvam = require('../lib/sarvam');
+const sarvamRest = require('../lib/sarvamRest');
 const pushLib = require('../lib/sarvamPush');
 const PB = require('../../shared/blocks');
 const { uid, now, h, fail, audit, can } = { ...require('../lib/util'), can: require('../auth').can };
@@ -272,6 +273,47 @@ r.post('/agents/pull-prompts', h(async (req, res) => {
   res.json(await pullAll(req.user));
 }));
 
+// "Load all prompts": reads EVERY agent's prompt and versions from Sarvam, including agents that only
+// exist in Sarvam. It runs in the background (two agents at a time) and the page polls for progress, so
+// a long run isn't cut off by the host's request time limit. One job at a time.
+let pullJob = null;
+async function runPullJob(job, agents, user) {
+  const queue = [...agents];
+  const worker = async () => {
+    while (queue.length && job.state === 'running') {
+      const a = queue.shift();
+      job.current.push(a.name);
+      try {
+        const x = await pullFromSarvam(a, user);
+        x.changed ? job.imported++ : job.unchanged++;
+        if (x.warning) job.errors.push(`${a.name}: ${x.warning}`);
+      } catch (e) {
+        const m = e.publicMessage || e.message;
+        job.failed++; job.errors.push(`${a.name}: ${m}`);
+        await db.put('agents', { ...(await db.get('agents', a.id)), sarvamPullError: m });
+        if (['sarvam_off', 'sarvam_no_token', 'sarvam_token'].includes(e.code)) { job.state = 'stopped'; job.stopped = m; } // same failure for every agent
+      }
+      job.current = job.current.filter(n => n !== a.name);
+      job.done++;
+    }
+  };
+  try { await Promise.all([worker(), worker()]); } catch (e) { job.state = 'stopped'; job.stopped = e.message; }
+  if (job.state === 'running') job.state = 'done';
+  job.finishedAt = now();
+}
+r.post('/agents/pull-all/start', h(async (req, res) => {
+  if (!can(req.user, 'edit')) throw fail(403, 'Your role cannot import prompts.');
+  if (pullJob && pullJob.state === 'running') return res.json(pullJob);
+  const st = await sarvam.status();
+  if (!st.hasToken || st.expired) throw fail(409, 'Connect Sarvam first: prompts are read through the Sarvam sign-in.');
+  const agents = await db.list('agents');
+  pullJob = { id: uid(), state: 'running', startedAt: now(), total: agents.length, done: 0, imported: 0, unchanged: 0, failed: 0, current: [], errors: [], by: req.user.email };
+  runPullJob(pullJob, agents, req.user);
+  await audit(req.user, 'agents.pull_all', { total: agents.length });
+  res.json(pullJob);
+}));
+r.get('/agents/pull-all/status', h(async (req, res) => res.json(pullJob || { state: 'idle' })));
+
 r.post('/agents/:id/pull', h(async (req, res) => {
   if (!can(req.user, 'edit')) throw fail(403, 'Your role cannot import prompts.');
   const a = await db.get('agents', req.params.id);
@@ -304,9 +346,28 @@ r.get('/agents/:id/interactions', h(async (req, res) => {
   const day = s => (/^\d{4}-\d\d-\d\d$/.test(String(s || '')) ? s : null);
   const to = day(req.query.to) || new Date().toISOString().slice(0, 10), from = day(req.query.from) || new Date(Date.now() - 6 * 864e5).toISOString().slice(0, 10);
   // Dates are the reviewer's local (IST) days: from 00:00 IST to the end of the "to" day.
-  const out = await kollect.interactions(a.sarvamAppId, `${from}T00:00:00+05:30`, `${to}T23:59:59+05:30`, Number(req.query.offset) || 0);
+  const out = await listCalls(a, `${from}T00:00:00+05:30`, `${to}T23:59:59+05:30`, Number(req.query.offset) || 0);
   res.json({ ...out, from, to });
 }));
+
+// Where calls come from, in order: the Sarvam API key (no daily sign-in, no Kollect), then the Sarvam
+// MCP sign-in, then Kollect. The first that answers wins; if none does, the first error is shown.
+async function mcpCalls(appId, from, to, offset) {
+  const r = await sarvam.callTool('analytics', { operation: 'report', id: 'interactions', params: { app_id: appId, start_datetime: new Date(from).toISOString(), end_datetime: new Date(to).toISOString(), offset, sort_by: 'start_datetime', sort_order: 'desc' } });
+  // The MCP report writes times as IST text ("Oct 08, 2026, 03:38:31 PM"): turn them into real timestamps.
+  const iso = s => { const t = Date.parse(String(s || '').replace(/,/g, '') + ' GMT+0530'); return isNaN(t) ? null : new Date(t).toISOString(); };
+  const items = (r.items || []).map(x => ({ ...sarvamRest.row({ ...x, start_datetime: null }), at: iso(x.start_datetime), hasAudio: undefined }));
+  const total = Number((r.pagination && r.pagination.total) || r.total) || items.length;
+  return { items, total, offset, more: r.pagination ? !!r.pagination.more : offset + items.length < total };
+}
+async function listCalls(a, from, to, offset) {
+  const errs = [];
+  if (sarvamRest.enabled()) { try { return await sarvamRest.list(a.sarvamAppId, { from, to, offset }); } catch (e) { errs.push(e.publicMessage || e.message); } }
+  const st = await sarvam.status();
+  if (st.hasToken && !st.expired) { try { return await mcpCalls(a.sarvamAppId, from, to, offset); } catch (e) { errs.push(e.publicMessage || e.message); } }
+  if (kollect.enabled() && a.inKollect !== false) { try { return await kollect.interactions(a.sarvamAppId, from, to, offset); } catch (e) { errs.push(e.publicMessage || e.message); } }
+  throw fail(502, errs[0] || 'There is no source for calls here. Set SARVAM_API_KEY in the environment (best: it never expires), or connect Sarvam, or set up Kollect.');
+}
 
 // Transcript with each turn's place in the recording. Sarvam's MCP analytics has the timings; the
 // REST transcript through Kollect (no timings) is the fallback when Sarvam isn't connected here.
@@ -321,8 +382,12 @@ async function transcriptFor(a, iid) {
     if (Array.isArray(t.transcript) && t.transcript.length) {
       out = { timed: true, turns: t.transcript.map(m => ({ role: m.role === 'assistant' ? 'agent' : m.role, text: m.content || '', language: m.language_name || '', start: m.audio_start_time ?? null, end: m.audio_end_time ?? null, state: m.state_name || '', tools: m.tools || null })) };
     }
-  } catch (_) { /* fall back to Kollect */ }
-  if (!out) { const t = await kollect.transcript(a.sarvamAppId, iid); out = { timed: false, turns: t.turns.map(m => ({ role: m.role, text: m.text, language: m.language, start: null, end: null })) }; }
+  } catch (_) { /* fall back to the API key, then Kollect */ }
+  if (!out && sarvamRest.enabled()) { try { out = await sarvamRest.transcript(a.sarvamAppId, iid); } catch (_) { /* fall back to Kollect */ } } // no timings, so lines don't follow the audio
+  if (!out) {
+    if (!kollect.enabled() || a.inKollect === false) throw fail(502, 'Couldn\'t read this transcript. Set SARVAM_API_KEY in the environment, or connect Sarvam.');
+    const t = await kollect.transcript(a.sarvamAppId, iid); out = { timed: false, turns: t.turns.map(m => ({ role: m.role, text: m.text, language: m.language, start: null, end: null })) };
+  }
   transcriptCache.set(key, out);
   if (transcriptCache.size > 100) transcriptCache.delete(transcriptCache.keys().next().value);
   return out;
@@ -345,7 +410,9 @@ r.get('/agents/:id/interactions/audio', h(async (req, res) => {
   const file = path.join(REC_DIR, crypto.createHash('sha1').update(a.sarvamAppId + '|' + iid).digest('hex') + '.wav');
   if (!fs.existsSync(file)) {
     if (!recPending.has(file)) recPending.set(file, (async () => {
-      const rec = await kollect.recording(a.sarvamAppId, iid);
+      let rec = null;
+      if (sarvamRest.enabled()) { try { rec = await sarvamRest.recording(a.sarvamAppId, iid); } catch (e) { if (!kollect.enabled()) throw e; } }
+      if (!rec) { if (!kollect.enabled()) throw fail(502, 'No way to fetch the recording: set SARVAM_API_KEY in the environment.'); rec = await kollect.recording(a.sarvamAppId, iid); }
       fs.mkdirSync(REC_DIR, { recursive: true });
       fs.writeFileSync(file + '.part', rec.data); fs.renameSync(file + '.part', file);
       const all = fs.readdirSync(REC_DIR).filter(f => f.endsWith('.wav')).map(f => ({ f, t: fs.statSync(path.join(REC_DIR, f)).mtimeMs })).sort((x, y) => y.t - x.t);

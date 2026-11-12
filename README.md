@@ -48,6 +48,27 @@ Sarvam's sign-in only returns to `localhost` unless Sarvam has allow-listed the 
 
 Alternatives: ask Sarvam to allow-list `https://<your-service>.onrender.com/api/sarvam/callback` (then the normal button works), or sign in on your own computer, run `npm run export-sarvam`, and paste the line it prints under "Or use a login made on your own computer". Don't use the same login in both places at once.
 
+The Sarvam login lasts about 24 hours and can't be renewed, so repeat the sign-in daily. Only two things need it: reading and pushing agent prompts, and the audio-synced transcript.
+
+### Calls without the daily login
+
+Set `SARVAM_API_KEY` (Sarvam > Voice Agents > Settings > API key) on Render. The Calls tab then lists calls, shows transcripts and plays recordings through that key, with no daily sign-in and without Kollect. It can't read prompts.
+
+### Load all prompts
+
+After signing in, **Load all prompts** on the Agents page copies every agent's committed prompt in the background, with a progress bar. It stops cleanly if the login lapses.
+
+### Copy your local data to Render
+
+Render's database starts empty. To bring over your local prompts, versions, feedback, tests and modules (never the Sarvam login):
+
+```bash
+DATABASE_URL="<External Database URL from Render>" npm run import-local            # dry run
+DATABASE_URL="<External Database URL from Render>" npm run import-local -- --apply  # do it
+```
+
+Nothing deployed is overwritten unless you add `--replace` (see the top of `scripts/import-local-data.js`).
+
 ## First week of use
 
 1. **Live agents → Import live prompt** for each agent. In Sarvam, copy everything from Canvas → Instructions and paste it in. The import is marked live at the Sarvam version Kollect calls.

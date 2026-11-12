@@ -191,7 +191,7 @@ const mdOf = (cfg, v, tags = true) => toMarkdown(header(cfg, v.v), v.order, v.se
 // ---------- Router ----------
 const ROUTES = {
   overview: { view: viewOverview, load: () => Promise.all([loadPrompts(true), loadAgents(true), api("GET", "/approvals").then(r => R.approvals = r.items), api("GET", "/core-changes").then(r => R.core = r.items)]) },
-  agents: { view: viewAgents, load: () => Promise.all([loadAgents(true), loadPrompts(true), api("GET", "/sarvam/status").then(r => R.sarvam = r).catch(() => R.sarvam = null)]) },
+  agents: { view: viewAgents, load: async () => { await Promise.all([loadAgents(true), loadPrompts(true), api("GET", "/sarvam/status").then(r => R.sarvam = r).catch(() => R.sarvam = null)]); api("GET", "/agents/pull-all/status").then(j => { if (j && j.state === "running") { R.pullJob = j; pollPull(); } }).catch(() => { }); } },
   create: { view: viewCreate, load: () => loadAgents() },
   improve: { view: viewImprove, load: async () => {
     await Promise.all([loadPrompts(true), loadAgents(true), api("GET", "/sarvam/status").then(r => R.sarvam = r).catch(() => R.sarvam = null)]);
@@ -286,12 +286,31 @@ function viewAgents() {
   const sOn = R.sarvam && R.sarvam.hasToken && !R.sarvam.expired;
   return `
   <div class="view-head"><div><h1>Agents</h1><p>Every agent in your Sarvam workspace${ag.length ? ` (${ag.length})` : ""}. Click one to see its prompt, its calls and to make changes.</p></div>
-  <div class="row">${canDo("approve") && R.sarvam && R.sarvam.hasToken ? `<button class="btn" data-act="clone-modal">+ New agent</button>` : ""}<a class="btn" href="#compare">⇄ Compare agents</a><button class="btn" data-act="sync" ${kOn || sOn ? "" : "disabled"} title="Reads every agent and its newest committed version from Sarvam, and talk time and calls from Kollect">↻ Refresh</button></div></div>
+  <div class="row">${canDo("approve") && R.sarvam && R.sarvam.hasToken ? `<button class="btn" data-act="clone-modal">+ New agent</button>` : ""}<a class="btn" href="#compare">⇄ Compare agents</a>${canDo("edit") && sOn ? `<button class="btn" data-act="pull-all" ${R.pullJob && R.pullJob.state === "running" ? "disabled" : ""} title="Reads every agent's prompt and versions from Sarvam, including agents the builder hasn't opened yet">⇣ Load all prompts</button>` : ""}<button class="btn" data-act="sync" ${kOn || sOn ? "" : "disabled"} title="Reads every agent and its newest committed version from Sarvam, and talk time and calls from Kollect">↻ Refresh</button></div></div>
   ${sarvamPanel()}
+  ${pullBar()}
   ${R.syncNote ? `<div class="notice"><span>${R.syncNote}</span><a href="#" class="small" data-act="sync-note-x">dismiss</a></div>` : ""}
   ${!kOn ? `<div class="notice"><span><b>Kollect isn't set up</b>, so talk time, calls and pinning aren't available. Agents and prompts still come straight from Sarvam.</span></div>` : ""}
   ${ag.length ? `<div class="alist">${[...ag].sort((x, y) => (x.inKollect === false) - (y.inKollect === false)).map(agentCard).join("")}</div>` : `<div class="empty">No agents yet. ${kOn || sOn ? "Click Refresh." : "Connect Sarvam first."}</div>`}
   ${(() => { const other = (R.prompts || []).filter(p => !p.agentId); return other.length ? `<h2 style="margin:24px 0 8px">Prompts not linked to an agent</h2><div class="alist">${other.map(p => `<a class="arow" href="#improve" data-act="open-prompt" data-id="${p.id}"><div class="nm"><b>${esc(p.name)}</b><div class="small muted">${p.latest ? "v" + esc(p.latest.v) : ""}</div></div><div>${p.latest ? statusPill(p.latest.status) : ""}</div><div></div></a>`).join("")}</div>` : ""; })()}`;
+}
+// "Load all prompts": progress while it runs in the background, and what happened when it's done.
+function pullBar() {
+  const j = R.pullJob; if (!j || j.state === "idle") return "";
+  const pct = j.total ? Math.round(100 * j.done / j.total) : 0;
+  if (j.state === "running") return `<div class="notice" style="flex-direction:column;align-items:stretch;gap:6px"><div class="row" style="justify-content:space-between"><b>Loading prompts from Sarvam · ${j.done} of ${j.total}</b><span class="small muted">${(j.current || []).map(esc).join(", ")}</span></div><div style="height:4px;border-radius:2px;background:var(--sunk)"><div style="height:4px;border-radius:2px;background:var(--accent);width:${pct}%"></div></div><div class="small muted">You can leave this page. It keeps going.</div></div>`;
+  const bad = (j.errors || []).length;
+  return `<div class="notice ${j.state === "done" && !j.failed ? "ok" : ""}" style="flex-direction:column;align-items:stretch;gap:4px"><div class="row" style="justify-content:space-between"><span><b>${j.state === "done" ? "Loaded all prompts" : "Stopped: " + esc(j.stopped || "")}</b> · ${j.imported} new or updated, ${j.unchanged} already current${j.failed ? `, ${j.failed} couldn't be loaded` : ""}</span><a href="#" class="small" data-act="pull-bar-x">dismiss</a></div>${bad ? `<details class="small"><summary>${bad} note${bad === 1 ? "" : "s"}</summary>${j.errors.map(e => `<div class="muted">${esc(e)}</div>`).join("")}</details>` : ""}</div>`;
+}
+async function pollPull() {
+  if (R.pullPoll) return;
+  R.pullPoll = setInterval(async () => {
+    try {
+      const j = await api("GET", "/agents/pull-all/status"); R.pullJob = j;
+      if (j.state !== "running") { clearInterval(R.pullPoll); R.pullPoll = null; await Promise.all([loadAgents(true), loadPrompts(true)]); toast(j.state === "done" ? `Loaded all prompts: ${j.imported} new or updated, ${j.unchanged} already current${j.failed ? `, ${j.failed} couldn't be loaded` : ""}.` : `Stopped: ${j.stopped || "see the note on the Agents page"}`); }
+      if (route() === "agents") render();
+    } catch (e) { clearInterval(R.pullPoll); R.pullPoll = null; }
+  }, 2000);
 }
 // Sarvam connection: one quiet line when fine, a yellow bar with one button when it needs action.
 function sarvamPanel() {
@@ -1505,6 +1524,8 @@ const ACT = {
     toast(`${r.synced} agents${r.added ? ` (${r.added} new from Sarvam)` : ""}. ${promptMsg(r.prompts)}`);
   }, "Refreshing…"),
   "sync-note-x": () => { R.syncNote = ""; render(); },
+  "pull-all": el => run(el, async () => { R.pullJob = await api("POST", "/agents/pull-all/start"); render(); pollPull(); }, "Starting…"),
+  "pull-bar-x": () => { R.pullJob = null; render(); },
   "pull-all": el => run(el, async () => { const r = await api("POST", "/agents/pull-prompts"); await reloadAgents(); toast(promptMsg(r)); }, "Pulling…"),
   pull: el => run(el, async () => { const r = await api("POST", `/agents/${encodeURIComponent(el.dataset.id)}/pull`); await reloadAgents(); toast(r.changed ? `Imported as v${r.v}` : "Already up to date with Sarvam"); }, "Pulling…"),
   "sarvam-finish": el => run(el, async () => {

@@ -121,7 +121,12 @@ async function tryRefresh(t) {
     method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: t.refreshToken, client_id: c.clientId, resource: MCP }),
   });
-  if (!res.ok || !body.access_token) return null;
+  if (!res.ok || !body.access_token) {
+    // Sarvam says there's no refresh token (the login simply lasts about 24 hours): remember that, so the
+    // status can say "expired" instead of looking connected, and we stop asking.
+    if (res.status === 400 || res.status === 401) await db.put('settings', { ...t, refreshFailed: true });
+    return null;
+  }
   return saveTokens(body);
 }
 
@@ -133,17 +138,20 @@ async function getToken() {
 }
 
 async function status() {
-  const t = await db.get('settings', TOKEN_ID);
+  let t = await db.get('settings', TOKEN_ID);
   if (!t || !t.token) return { configured: true, hasToken: false };
-  const expired = t.expiresAt ? Date.parse(t.expiresAt) < Date.now() : false;
-  return { configured: true, hasToken: true, expiresAt: t.expiresAt, expired: expired && !t.refreshToken, setBy: t.setBy, setAt: t.setAt, lastError: t.lastError || null };
+  const past = t.expiresAt ? Date.parse(t.expiresAt) < Date.now() : false;
+  // Past its time: try to renew once, so "connected" is never shown for a login that can't be used.
+  if (past && t.refreshToken && !t.refreshFailed) { try { await getToken(); } catch (_) { /* below */ } t = (await db.get('settings', TOKEN_ID)) || t; }
+  const stillPast = t.expiresAt ? Date.parse(t.expiresAt) < Date.now() : false;
+  return { configured: true, hasToken: true, expiresAt: t.expiresAt, expired: stillPast && (!t.refreshToken || !!t.refreshFailed), setBy: t.setBy, setAt: t.setAt, lastError: t.lastError || null };
 }
 
 async function clearToken() { sessionId = null; initialized = false; await db.del('settings', TOKEN_ID); }
 
 // Take over a Sarvam login made on another machine (where sign-in is allowed, e.g. localhost). The line
 // comes from scripts/export-sarvam-token.js: the access token, the refresh token and the client they
-// belong to. The refresh token keeps the login alive here. Checked with Sarvam before it is kept.
+// belong to. Sarvam logins last about 24 hours and can't be renewed, so this is a day's login. Checked with Sarvam before it is kept.
 async function importConnection(blob, by) {
   let d = null;
   try { d = JSON.parse(Buffer.from(String(blob || '').trim(), 'base64').toString('utf8')); } catch (_) { /* below */ }

@@ -11,7 +11,7 @@ let st;
 try { st = JSON.parse(fs.readFileSync(file, 'utf8')); } catch (e) { console.error('Could not read data/store.json. Run this in the folder where the builder runs locally.'); process.exit(1); }
 const t = (st.settings || {})['sarvam-token'], c = (st.settings || {})['sarvam-oauth-client'];
 if (!t || !t.token || !c || !c.clientId) { console.error('No Sarvam login here yet. Start the builder, open the Agents page and click Connect Sarvam first.'); process.exit(1); }
-if (!t.refreshToken) console.error('Note: this login has no refresh token, so it will stop working when the access token expires (about 24 hours).');
+console.error('Note: a Sarvam login lasts about 24 hours and cannot be renewed. After that, sign in again and export a fresh line.');
 const line = Buffer.from(JSON.stringify({ v: 1, clientId: c.clientId, redirectUri: c.redirectUri, token: t.token, refreshToken: t.refreshToken || null, expiresAt: t.expiresAt })).toString('base64');
 console.error('Copy the next line (all of it) and paste it into the deployed builder:\n');
 console.log(line);

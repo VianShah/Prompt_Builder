@@ -43,5 +43,6 @@ module.exports = {
   // How an approved prompt reaches Sarvam. "manual" = copy into Sarvam Canvas, commit, then confirm here.
   sarvamPush: process.env.SARVAM_PROMPT_PUSH || 'manual',
   // Reading live instructions from Sarvam (same org/workspace ids as Kollect). The login token is pasted in the UI.
-  sarvam: { orgId: process.env.SARVAM_ORG_ID || '', workspaceId: process.env.SARVAM_WORKSPACE_ID || '' },
+  // apiKey: the Voice Agents API key. Used for calls, transcripts and recordings (see lib/sarvamRest.js); it can't read prompts.
+  sarvam: { orgId: process.env.SARVAM_ORG_ID || '', workspaceId: process.env.SARVAM_WORKSPACE_ID || '', apiKey: process.env.SARVAM_API_KEY || '' },
 };
