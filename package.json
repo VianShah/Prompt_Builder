@@ -1,0 +1,19 @@
+{
+  "name": "kollect-prompt-builder",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Prompt Builder for Kollect collections voice agents: assemble prompts from proven blocks, map UAT feedback to sections, version and approve changes, and confirm Sarvam versions through the Kollect dashboard.",
+  "main": "server/index.js",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node --watch server/index.js",
+    "mock-kollect": "node scripts/mockKollect.js",
+    "smoke": "node scripts/smoke.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "pg": "^8.12.0"
+  }
+}

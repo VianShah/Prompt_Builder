@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Prompt Builder · Kollect</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700&family=Sora:wght@500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="/css/app.css">
+</head>
+<body>
+<div id="login" class="login" hidden>
+  <form class="panel" id="loginForm">
+    <div class="brand"><svg width="28" height="28" viewBox="0 0 28 28" aria-hidden="true"><rect width="28" height="28" rx="7" fill="var(--accent)"/><g stroke="var(--accent-ink)" stroke-width="2" stroke-linecap="round"><path d="M7 14v0M10.5 10v8M14 7v14M17.5 11v6M21 13v2"/></g></svg>
+      <div><b>Prompt Builder</b><small>Kollect · collections voice agents</small></div></div>
+    <label class="f">Email<input type="text" id="lEmail" autocomplete="username" required></label>
+    <label class="f">Password<input type="password" id="lPass" autocomplete="current-password" required></label>
+    <button class="btn primary" type="submit">Sign in</button>
+    <p class="small" id="lMsg" style="color:var(--err)"></p>
+  </form>
+</div>
+<div id="shell" hidden>
+  <header class="topbar">
+    <div class="topbar-in">
+      <div class="brand">
+        <svg width="28" height="28" viewBox="0 0 28 28" aria-hidden="true"><rect width="28" height="28" rx="7" fill="var(--accent)"/><g stroke="var(--accent-ink)" stroke-width="2" stroke-linecap="round"><path d="M7 14v0M10.5 10v8M14 7v14M17.5 11v6M21 13v2"/></g></svg>
+        <div><b>Prompt Builder</b><small>Kollect · collections voice agents</small></div>
+      </div>
+      <nav class="tabs" id="tabs" aria-label="Sections">
+        <a href="#agents" data-also="improve compare">Agents</a>
+        <a href="#approvals">Approvals <span class="badge" id="apprCount" hidden></span></a>
+      </nav>
+      <details class="more" id="moreMenu"><summary class="btn sm ghost">More ▾</summary>
+        <div class="more-pop">
+          <a href="#create">Create a new prompt</a>
+          <a href="#knowledge">Knowledge base</a>
+          <a href="#modules">Module library</a>
+          <a href="#library">Block library</a>
+          <a href="#overview">How it works</a>
+        </div>
+      </details>
+      <div class="userbox"><span class="ai-state" id="aiState"><span class="dot"></span><span>…</span></span><span id="who"></span><button class="btn sm ghost" id="logout">Sign out</button></div>
+    </div>
+  </header>
+  <main id="app"></main>
+</div>
+<div id="modal" class="modal" hidden></div>
+<div class="toast" id="toast" hidden></div>
+<script src="/shared/blocks.js"></script>
+<script src="/shared/promptcore.js"></script>
+<script src="/js/app.js"></script>
+</body>
+</html>
