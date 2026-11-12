@@ -47,5 +47,11 @@ module.exports = {
   sarvamPush: process.env.SARVAM_PROMPT_PUSH || 'manual',
   // Reading live instructions from Sarvam (same org/workspace ids as Kollect). The login token is pasted in the UI.
   // apiKey: the Voice Agents API key. Used for calls, transcripts and recordings (see lib/sarvamRest.js); it can't read prompts.
+  // Module library in the GitHub repo. A fine-grained token with Contents: read and write on this repo.
+  github: {
+    token: process.env.GITHUB_TOKEN || '',
+    repo: process.env.GITHUB_REPO || '',              // owner/name, e.g. VianShah/Prompt_Builder
+    branch: process.env.GITHUB_LIBRARY_BRANCH || 'module-library',
+  },
   sarvam: { orgId: process.env.SARVAM_ORG_ID || '', workspaceId: process.env.SARVAM_WORKSPACE_ID || '', apiKey: process.env.SARVAM_API_KEY || '' },
 };

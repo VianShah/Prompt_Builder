@@ -51,6 +51,13 @@ services:
         sync: false
       - key: SARVAM_API_KEY
         sync: false
+      # Module library: committed to this repo on the module-library branch.
+      - key: GITHUB_TOKEN
+        sync: false
+      - key: GITHUB_REPO
+        value: VianShah/Prompt_Builder
+      - key: GITHUB_LIBRARY_BRANCH
+        value: module-library
       # true: the engineer who builds an agent approves it. false: a second person must approve.
       - key: SELF_APPROVE
         value: "true"

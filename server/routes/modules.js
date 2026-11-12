@@ -52,7 +52,7 @@ r.get('/modules', h(async (req, res) => {
   const all = await db.list('modules');
   const use = await usage();
   const ids = [...new Set(all.map(m => m.moduleId))];
-  res.json({ items: ids.map(id => {
+  res.json({ library: require('../lib/libraryStore').status(), items: ids.map(id => {
     const vs = all.filter(m => m.moduleId === id).sort((a, b) => cmpV(a.v, b.v));
     const latest = vs[vs.length - 1];
     return { id: latest.id, moduleId: id, v: latest.v, title: latest.title, status: latest.status, purpose: latest.purpose, rules: latest.rules.length, tests: (latest.tests || []).length,

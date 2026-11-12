@@ -3,6 +3,9 @@
 const fs = require('fs');
 const path = require('path');
 const config = require('./config');
+// Modules are kept in the git repo (lib/libraryStore.js), not in this store.
+const library = require('./lib/libraryStore');
+const LIB = 'modules';
 
 const COLLECTIONS = ['agents', 'prompts', 'versions', 'feedback', 'coreChanges', 'audit', 'settings', 'tests', 'factory', 'modules'];
 let pool = null;
@@ -25,6 +28,11 @@ async function init() {
     COLLECTIONS.forEach(c => { mem[c] = mem[c] || {}; });
     console.warn('[db] DATABASE_URL not set: using data/store.json. Fine locally; data will be lost on Render redeploys.');
   }
+  // Modules saved in the database before the library moved to git are copied over once.
+  let seed = [];
+  if (pool) seed = (await pool.query('SELECT data FROM docs WHERE col=$1 ORDER BY created_at', [LIB])).rows.map(r => r.data);
+  else seed = Object.values(mem[LIB] || {});
+  await library.init(seed);
 }
 function persistFile() {
   fs.mkdirSync(path.dirname(FILE), { recursive: true });
@@ -34,18 +42,21 @@ const check = col => { if (!COLLECTIONS.includes(col)) throw new Error('unknown 
 
 async function get(col, id) {
   check(col);
+  if (col === LIB) return library.get(id);
   if (pool) { const r = await pool.query('SELECT data FROM docs WHERE col=$1 AND id=$2', [col, id]); return r.rows[0] ? r.rows[0].data : null; }
   return mem[col][id] ? JSON.parse(JSON.stringify(mem[col][id])) : null;
 }
 async function list(col, filter) {
   check(col);
   let rows;
+  if (col === LIB) { rows = await library.list(); return filter ? rows.filter(filter) : rows; }
   if (pool) rows = (await pool.query('SELECT data FROM docs WHERE col=$1 ORDER BY created_at', [col])).rows.map(r => r.data);
   else rows = Object.values(mem[col]).map(d => JSON.parse(JSON.stringify(d))).sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)));
   return filter ? rows.filter(filter) : rows;
 }
 async function put(col, doc) {
   check(col);
+  if (col === LIB) return library.put(doc);
   if (!doc.id) throw new Error('doc.id required');
   doc.updatedAt = new Date().toISOString();
   doc.createdAt = doc.createdAt || doc.updatedAt;
@@ -57,6 +68,7 @@ async function put(col, doc) {
 }
 async function del(col, id) {
   check(col);
+  if (col === LIB) return library.del(id);
   if (pool) await pool.query('DELETE FROM docs WHERE col=$1 AND id=$2', [col, id]);
   else { delete mem[col][id]; persistFile(); }
 }

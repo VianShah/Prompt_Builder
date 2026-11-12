@@ -227,7 +227,7 @@ const ROUTES = {
   knowledge: { view: viewKnowledge, load: null },
   compare: { view: viewCompare, load: async () => { await Promise.all([loadAgents(true), loadPrompts(true)]); R.cmpData = {}; cmpLoad(); } },
   library: { view: viewLibrary, load: () => api("GET", "/core-changes").then(r => R.core = r.items) },
-  modules: { view: viewModules, load: async () => { await Promise.all([loadAgents(true), loadPrompts(true)]); R.mods = (await api("GET", "/modules")).items; if (R.modId) await loadMod(R.modId); } }
+  modules: { view: viewModules, load: async () => { await Promise.all([loadAgents(true), loadPrompts(true)]); const mr = await api("GET", "/modules"); R.mods = mr.items; R.lib = mr.library; if (R.modId) await loadMod(R.modId); } }
 };
 const route = () => { const h = location.hash.slice(1).split("?")[0]; return ROUTES[h] ? h : "agents"; };
 function updateBadge() {
@@ -1421,11 +1421,17 @@ async function showDiffModal(pid, vid) {
 // agent: you see the exact changes first, they're saved as a draft, then approved and pushed as usual.
 async function loadMod(id) { const r = await api("GET", `/modules/${id}`); R.modDoc = r; R.modId = id; if (!R.modUse || R.modUse.docId !== id) R.modUse = { docId: id, agentId: "", options: null, params: {}, preview: null }; }
 const modSt = s => `<span class="chip ${s === "approved" ? "ok" : "warn"}">${s === "approved" ? "Approved" : "Draft"}</span>`;
+// Where the module library is saved (the git repo), and the last save error if any.
+function libLine() {
+  const l = R.lib; if (!l) return "";
+  const where = l.kind === "github" ? `Saved in git: <span class="mono">${esc(l.repo)}</span>, branch <span class="mono">${esc(l.branch)}</span>, folder <span class="mono">${esc(l.path)}</span>. Every save is a commit.` : `Saved as files in <span class="mono">${esc(l.path)}</span> of this folder. Commit them to git (set GITHUB_TOKEN on Render to commit automatically).`;
+  return `<p class="small muted">${where}</p>${l.lastError ? `<div class="vitem warn"><span class="ic">!</span><div class="vt"><b>Module library problem</b><span>${esc(l.lastError)}</span></div></div>` : ""}`;
+}
 function viewModules() {
   if (R.modId && R.modDoc) return viewModule();
   const L = R.mods || [], ag = (R.agents || []).filter(a => a.promptId);
   const X = R.modNew || (R.modNew = { agentId: "", topic: "", moduleId: "", title: "", open: false });
-  return `<div class="view-head"><div><h1>Module library</h1><p>Reusable rules for one behaviour, like payment dates. <b>Making or changing a module never changes an agent.</b> An agent changes only when you use a module for it and approve that change.</p></div>
+  return `<div class="view-head"><div><h1>Module library</h1><p>Reusable rules for one behaviour, like payment dates. <b>Making or changing a module never changes an agent.</b> An agent changes only when you use a module for it and approve that change.</p>${libLine()}</div>
    <div class="row">${canDo("edit") ? `<button class="btn primary" data-act="mod-new-toggle">+ Extract a module from an agent</button>` : ""}</div></div>
   ${X.open ? `<div class="panel stack" style="margin-bottom:16px"><h2>Extract a module</h2>
     <p class="small muted">The AI finds every rule about this behaviour in the agent's prompt, wherever it sits, and turns it into a client-neutral module with settings and tests. The agent is only read.</p>
