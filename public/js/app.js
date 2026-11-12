@@ -1364,7 +1364,7 @@ function viewApprovals() {
      </ol></details>` : ""}
    </div>`; };
   return `
-  <div class="view-head"><div><h1>Approvals</h1><p>Changes waiting for a second pair of eyes, then ready to push live.</p></div></div>
+  <div class="view-head"><div><h1>Approvals</h1><p>${R.selfApprove ? "Review each change, approve it, then push it live." : "Changes waiting for a second person to approve, then ready to push live."}</p></div></div>
   <div class="grid2">
    <div class="stack"><h2>Waiting for approval · ${pending.length}</h2>${pending.length ? pending.map(card).join("") : `<div class="empty">Nothing waiting.</div>`}</div>
    <div class="stack"><h2>Approved, not live yet · ${approved.length}</h2>${approved.length ? approved.map(card).join("") : `<div class="empty">Nothing approved and waiting to go live.</div>`}</div>
