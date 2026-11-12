@@ -31,11 +31,28 @@ services:
         sync: false
       - key: KOLLECT_API_KEY
         sync: false
+      # Claude Sonnet 5.5 on Bedrock is the main model; GLM and Gemini are fallbacks.
+      - key: AWS_BEARER_TOKEN_BEDROCK
+        sync: false
+      - key: BEDROCK_REGION
+        value: ap-south-1
+      - key: CLAUDE_MODEL
+        value: global.anthropic.claude-sonnet-5-5
       - key: GEMINI_API_KEY
         sync: false
       - key: GLM_BEDROCK_API_KEY
         sync: false
       - key: LLM_ORDER
-        value: glm,gemini
+        value: claude,glm,gemini
+      # Sarvam workspace (MCP sign-in reads/pushes prompts) and the Voice Agents API key (calls tab).
+      - key: SARVAM_ORG_ID
+        sync: false
+      - key: SARVAM_WORKSPACE_ID
+        sync: false
+      - key: SARVAM_API_KEY
+        sync: false
+      # true: the engineer who builds an agent approves it. false: a second person must approve.
+      - key: SELF_APPROVE
+        value: "true"
       - key: SARVAM_PROMPT_PUSH
         value: manual

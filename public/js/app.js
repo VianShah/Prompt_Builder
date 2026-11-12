@@ -55,25 +55,44 @@ const isHead = l => /^\s*(#{1,6}\s+\S|\*\*[^*].*\*\*\s*:?\s*$|\\\*\\\*.+\\\*\\\*
 // Groups a line diff into changes, each with its context line above/below and the nearest heading.
 function cvHunks(a, b) {
   const ops = lineDiff(String(a || "").replace(/\r/g, ""), String(b || "").replace(/\r/g, ""));
-  const hs = []; let cur = null, head = "", lastCtx = null;
+  // la / lb: line numbers (1-based) in the old and new text, so each change says where it is.
+  const hs = []; let cur = null, head = "", lastCtx = null, la = 0, lb = 0;
   ops.forEach(([k, t], idx) => {
-    if (k === "c") { if (cur) { cur.post = t; hs.push(cur); cur = null; } if (isHead(t)) head = t; lastCtx = t; return; }
-    if (!cur) cur = { del: [], add: [], pre: lastCtx, head, start: idx };
-    (k === "d" ? cur.del : cur.add).push(t);
-    if (k === "d" && isHead(t)) head = t;
+    if (k === "c") { la++; lb++; if (cur) { cur.post = t; hs.push(cur); cur = null; } if (isHead(t)) head = t; lastCtx = t; return; }
+    if (!cur) cur = { del: [], add: [], pre: lastCtx, head, start: idx, aLine: la + 1, bLine: lb + 1 };
+    if (k === "d") { la++; cur.del.push(t); if (isHead(t)) head = t; } else { lb++; cur.add.push(t); }
   });
   if (cur) hs.push(cur);
-  return { ops, hunks: hs.map(h => ({ ...h, kind: h.del.some(x => x.trim()) && h.add.some(x => x.trim()) ? "changed" : h.add.some(x => x.trim()) ? "new" : "removed" })).filter(h => h.del.some(x => x.trim()) || h.add.some(x => x.trim())) };
+  return { ops, hunks: hs.map(h => {
+    const kind = h.del.some(x => x.trim()) && h.add.some(x => x.trim()) ? "changed" : h.add.some(x => x.trim()) ? "new" : "removed";
+    return { ...h, kind, label: kind === "new" ? "Added" : kind === "removed" ? "Removed" : cvSimilar(h.del.join(" "), h.add.join(" ")) >= 0.5 ? "Modified" : "Replaced" };
+  }).filter(h => h.del.some(x => x.trim()) || h.add.some(x => x.trim())) };
 }
+// Share of words kept between before and after (0 = all new, 1 = same). "Modified" keeps at least half.
+function cvSimilar(a, b) {
+  const wa = String(a).toLowerCase().match(/[\p{L}\p{N}{}_]+/gu) || [], wb = String(b).toLowerCase().match(/[\p{L}\p{N}{}_]+/gu) || [];
+  if (!wa.length || !wb.length) return 0;
+  const pool = new Map(); wa.forEach(w => pool.set(w, (pool.get(w) || 0) + 1));
+  let common = 0; wb.forEach(w => { const n = pool.get(w); if (n) { common++; pool.set(w, n - 1); } });
+  return common / Math.max(wa.length, wb.length);
+}
+// "line 12" / "lines 12–14" in the old text and the new text.
+function cvLines(h) {
+  const r = (start, n) => n <= 1 ? `line ${start}` : `lines ${start}–${start + n - 1}`;
+  if (h.kind === "new") return `new ${r(h.bLine, h.add.length)}`;
+  if (h.kind === "removed") return `was ${r(h.aLine, h.del.length)}`;
+  return `${r(h.aLine, h.del.length)} → ${r(h.bLine, h.add.length)}`;
+}
+const CV_KLASS = { Added: "new", Removed: "removed", Modified: "changed", Replaced: "replaced" };
 const cvClip = (lines, max = 24) => lines.length > max ? [...lines.slice(0, max), `… ${lines.length - max} more line${lines.length - max === 1 ? "" : "s"}`] : lines;
 const cvHeadText = h => String(h || "").replace(/[#*\\_]+/g, "").replace(/\s+/g, " ").trim().slice(0, 80);
 function diffHtml(a, b, opts = {}) {
   const { hunks } = cvHunks(a, b);
   if (!hunks.length) return `<div class="cv"><div class="cv-bar"><span class="muted">No changes</span></div></div>`;
   const mode = R.diffMode || "split";
-  const count = k => hunks.filter(h => h.kind === k).length;
+  const count = l => hunks.filter(h => h.label === l).length;
   const dChars = String(b || "").replace(/\r/g, "").length - String(a || "").replace(/\r/g, "").length;
-  const bar = `<div class="cv-bar"><span>${[["changed", "changed"], ["new", "new"], ["removed", "removed"]].filter(([k]) => count(k)).map(([k, l]) => `<span class="cv-k ${k}">${count(k)} ${l}</span>`).join(" ")} <span class="muted">· ${delta(dChars)} characters</span></span>
+  const bar = `<div class="cv-bar"><span>${["Modified", "Replaced", "Added", "Removed"].filter(l => count(l)).map(l => `<span class="cv-k ${CV_KLASS[l]}">${count(l)} ${l.toLowerCase()}</span>`).join(" ")} <span class="muted">· ${delta(dChars)} characters</span></span>
     <span class="row" style="gap:8px"><label class="check small"><input type="checkbox" data-act-check="cv-full" ${R.cvFull ? "checked" : ""}> Show full text</label><span class="seg cv-mode"><button type="button" data-act="diff-mode" data-m="split" aria-pressed="${mode === "split"}">Side by side</button><button type="button" data-act="diff-mode" data-m="inline" aria-pressed="${mode === "inline"}">Inline</button></span></span></div>`;
   const ctx = t => t != null && t.trim() ? `<div class="cv-ctx">${esc(t.length > 180 ? t.slice(0, 180) + "…" : t)}</div>` : "";
   const cards = hunks.map((h, hi) => {
@@ -83,7 +102,7 @@ function diffHtml(a, b, opts = {}) {
     const editing = key && R.hunkEdit === key;
     const where = cvHeadText(h.head);
     const actions = opts.edit && !editing ? `<span class="cv-act">${h.kind !== "removed" ? `<button class="btn sm ghost" data-act="hunk-edit" data-k="${esc(key)}">✎ Edit</button>` : ""}<button class="btn sm ghost" data-act="hunk-undo" data-k="${esc(key)}" title="Drop just this part of the change">↺ Undo</button></span>` : "";
-    const head = `<div class="cv-head"><span class="cv-k ${h.kind}">${h.kind === "changed" ? "Changed" : h.kind === "new" ? "New" : "Removed"}</span>${where ? `<span class="small muted">under “${esc(where)}”</span>` : ""}<span class="small muted">${delta(h.add.join("\n").length - h.del.join("\n").length)}</span>${actions}</div>`;
+    const head = `<div class="cv-head"${opts.anchor ? ` id="${esc(opts.anchor)}-${hi}"` : ""}><span class="cv-k ${CV_KLASS[h.label]}">${h.label}</span><span class="small mono cv-ln">${opts.section ? esc(opts.section) + " · " : ""}${cvLines(h)}</span>${where ? `<span class="small muted">under “${esc(where)}”</span>` : ""}<span class="small muted">${delta(h.add.join("\n").length - h.del.join("\n").length)}</span>${actions}</div>`;
     if (editing) return `<div class="cv-card editing">${head}<div class="cv-edit"><div class="small muted">Edit what this part should say. Everything else in the fix stays as it is.</div>
       <textarea id="hunk-text" rows="${Math.min(14, Math.max(3, h.add.length + 1))}" class="mono">${esc(h.add.join("\n"))}</textarea>
       <div class="row" style="gap:6px"><button class="btn sm primary" data-act="hunk-save" data-k="${esc(key)}">Save this part</button><button class="btn sm" data-act="hunk-cancel">Cancel</button></div></div></div>`;
@@ -168,7 +187,7 @@ const aiOn = () => R.health && R.health.llm && R.health.llm.length > 0;
 function showLogin() { $("#shell").hidden = true; $("#login").hidden = false; }
 $("#loginForm").addEventListener("submit", async e => {
   e.preventDefault(); $("#lMsg").textContent = "";
-  try { const r = await api("POST", "/login", { email: $("#lEmail").value, password: $("#lPass").value }); R.me = r.user; boot(); }
+  try { const r = await api("POST", "/login", { email: $("#lEmail").value, password: $("#lPass").value }); R.me = r.user; R.selfApprove = r.selfApprove !== false; boot(); }
   catch (err) { $("#lMsg").textContent = err.message; }
 });
 $("#logout").addEventListener("click", async () => { await api("POST", "/logout").catch(() => { }); location.reload(); });
@@ -1106,9 +1125,22 @@ function sarvamAgentPanel(cur) {
     <div class="small muted">Variables and languages are changed in Sarvam. The greeting and instructions can be edited here with ✎ Edit.</div>
    </div></details>`;
 }
+// Review view: first a list of every change (section, lines, type, a short preview), then each change
+// in full with the exact words highlighted. Reviewers read the changes, not the whole long prompt.
 function versionDiff(a, b) {
-  const changed = [...new Set([...Object.keys(a.sections), ...Object.keys(b.sections)])].filter(k => (a.sections[k] || "") !== (b.sections[k] || ""));
-  return changed.length ? changed.map(k => `<div style="margin-bottom:8px"><b>${secTitle(k)}</b>${diffHtml(a.sections[k] || "", b.sections[k] || "")}</div>`).join("") : `<span class="muted">No section changes.</span>`;
+  const order = [...new Set([...(b.order || []), ...(a.order || []), ...Object.keys(a.sections), ...Object.keys(b.sections)])];
+  const changed = order.filter(k => (a.sections[k] || "") !== (b.sections[k] || ""));
+  if (!changed.length) return `<span class="muted">No section changes.</span>`;
+  const uid = "cv" + Math.random().toString(36).slice(2, 8);
+  const peek = t => { const x = t.filter(l => l.trim() && !/^<!--.*-->$/.test(l.trim())).join(" ").replace(/\s+/g, " ").trim(); return x.length > 110 ? x.slice(0, 110) + "…" : x; };
+  // A block of changed lines with as many lines before as after is listed line by line, each with its own type.
+  const perLine = h => h.kind !== "changed" || h.del.length !== h.add.length || h.del.length < 2 ? [h]
+    : h.del.map((d, i) => { const x = { ...h, del: [d], add: [h.add[i]], aLine: h.aLine + i, bLine: h.bLine + i }; return d.trim() === h.add[i].trim() ? null : { ...x, label: cvSimilar(d, h.add[i]) >= 0.5 ? "Modified" : "Replaced" }; }).filter(Boolean);
+  const rows = changed.flatMap(k => cvHunks(a.sections[k] || "", b.sections[k] || "").hunks.flatMap((h0, hi) => perLine(h0).map(h => ({ k, h, hi }))));
+  const list = `<div class="tbl-wrap cv-list"><table><thead><tr><th>Section</th><th>Where</th><th>Change</th><th>What</th></tr></thead><tbody>${rows.map(({ k, h, hi }) =>
+    `<tr><td><a href="#" data-act="cv-jump" data-to="${uid}-${esc(k)}-${hi}">${esc(secTitle(k))}</a></td><td class="mono small nowrap">${cvLines(h)}</td><td><span class="cv-k ${CV_KLASS[h.label]}">${h.label}</span></td><td class="small">${h.kind === "removed" ? `<del>${esc(peek(h.del))}</del>` : esc(peek(h.add))}</td></tr>`).join("")}</tbody></table></div>`;
+  return `<div class="small muted" style="margin-bottom:6px">${rows.length} change${rows.length === 1 ? "" : "s"} in ${changed.length} section${changed.length === 1 ? "" : "s"}. Line numbers count from the top of each section.</div>${list}` +
+    changed.map(k => `<div style="margin:12px 0 8px"><b>${secTitle(k)}</b>${diffHtml(a.sections[k] || "", b.sections[k] || "", { anchor: `${uid}-${k}`, section: secTitle(k) })}</div>`).join("");
 }
 function fbCard(it, latest) {
   const m = it.map, sevC = { high: "err", medium: "warn", low: "" };
@@ -1293,7 +1325,7 @@ function viewApprovals() {
     return `<div class="panel stack">
     <div class="row" style="justify-content:space-between"><div><h3>${esc(v.promptName)} · v${esc(v.v)}</h3><div class="small muted">${esc(v.note)} · by ${esc(v.by)} · ${fmtDate(v.createdAt)}</div></div>${statusPill(v.status)}</div>
     <div class="row" style="gap:6px"><button class="btn sm" data-act="see-diff" data-pid="${v.promptId}" data-vid="${v.id}">See changes</button><a class="btn sm ghost" href="#improve" data-act="open-prompt" data-id="${v.promptId}">Open prompt</a>${canDo("edit") ? `<a class="btn sm ghost" href="#improve" data-act="open-edit" data-id="${v.promptId}" title="Edits are saved as a new draft that needs approval again">✎ Edit text</a>` : ""}</div>
-    ${v.status === "pending" ? (canDo("approve") ? `<div class="row" style="gap:6px"><input type="text" id="note-${v.id}" placeholder="Note (required to reject)" style="flex:1;min-width:180px"><button class="btn sm primary" data-act="approve" data-vid="${v.id}" ${v.by === R.me.email && R.me.role !== "admin" ? "disabled title='Someone other than the author must approve'" : ""}>Approve</button><button class="btn sm" data-act="reject" data-vid="${v.id}">Reject</button></div>` : `<div class="small muted">Waiting for an approver.</div>`) : ""}
+    ${v.status === "pending" ? (canDo("approve") ? `<div class="row" style="gap:6px"><input type="text" id="note-${v.id}" placeholder="Note (required to reject)" style="flex:1;min-width:180px"><button class="btn sm primary" data-act="approve" data-vid="${v.id}" ${!R.selfApprove && [v.by, ...(v.editedBy || [])].includes(R.me.email) && R.me.role !== "admin" ? "disabled title='Someone who did not write or edit this version must approve it'" : ""}>Approve</button><button class="btn sm" data-act="reject" data-vid="${v.id}">Reject</button></div>` : `<div class="small muted">Waiting for an approver.</div>`) : ""}
     ${v.status === "approved" ? `<div class="small muted">Approved by ${esc(v.approvedBy)} · ${fmtDate(v.approvedAt)}${last.note ? " · " + esc(last.note) : ""}</div>
      <div class="row" style="gap:6px">${pushControl({ prompt: { id: v.promptId }, agent }, v)}<span class="small muted">${agent ? `Writes the changes into ${esc(agent.name)} in Sarvam and commits a new version. You see them before anything is written.` : "Pick the Sarvam agent this prompt is for. Its prompt will be replaced by this one; you see it before anything is written."}</span></div>
      <details><summary class="small">Do it by hand instead</summary>
@@ -1643,6 +1675,7 @@ const ACT = {
     closeModal(); await go();
     toast(`Rebuilt v${r.v} on Sarvam v${r.newest}: ${r.moved} change${r.moved === 1 ? "" : "s"} moved over, newer fixes kept.${r.reapprove ? " It needs approval again." : ""}`);
   }, "Rebuilding…"),
+  "cv-jump": el => { const t = document.getElementById(el.dataset.to); if (t) { t.scrollIntoView({ behavior: "smooth", block: "center" }); t.parentElement.classList.add("cv-flash"); setTimeout(() => t.parentElement.classList.remove("cv-flash"), 1600); } },
   "diff-mode": el => { R.diffMode = el.dataset.m; try { localStorage.setItem("pb-diff-mode", R.diffMode); } catch (_) { } render(); },
   "hunk-edit": el => { R.hunkEdit = el.dataset.k; render(); const t = $("#hunk-text"); if (t) { t.focus(); t.setSelectionRange(t.value.length, t.value.length); } },
   "hunk-cancel": () => { R.hunkEdit = null; render(); },
@@ -1768,7 +1801,7 @@ const ACT = {
   undismiss: el => run(el, async () => { const it = item(el.dataset.id); await api("PATCH", `/feedback/${el.dataset.id}`, { status: it.map ? "mapped" : "new" }); await reloadCur(); }),
   cmp: el => { const i = +el.dataset.i; R.cmpOpen = R.cmpOpen === i ? null : i; render(); },
   submit: el => run(el, async () => { await api("POST", `/versions/${el.dataset.vid}/submit`); await reloadCur(); toast("Sent for approval"); }),
-  rollback: el => run(el, async () => { const r = await api("POST", `/versions/${el.dataset.vid}/rollback`); await reloadCur(); toast(r.pinned ? `Rolled back. Kollect now calls Sarvam v${r.sarvamVersion}.` : "Rolled back in the builder."); }, "Rolling back…"),
+  rollback: el => run(el, async () => { const r = await api("POST", `/versions/${el.dataset.vid}/rollback`); await reloadCur(); toast(r.pinned ? `Rolled back. Kollect now calls Sarvam v${r.sarvamVersion}.` : r.recommitted ? `Rolled back. The prompt of Sarvam v${r.from} is committed again as Sarvam v${r.sarvamVersion}.` : "Rolled back."); }, "Rolling back…"),
   approve: el => run(el, async () => { await api("POST", `/versions/${el.dataset.vid}/approve`, { note: ($("#note-" + el.dataset.vid) || {}).value }); await go(); toast("Approved"); }),
   reject: el => run(el, async () => { await api("POST", `/versions/${el.dataset.vid}/reject`, { note: ($("#note-" + el.dataset.vid) || {}).value }); await go(); toast("Rejected and sent back to the author"); }),
   "see-diff": el => run(el, () => showDiffModal(el.dataset.pid, el.dataset.vid)),
@@ -1916,4 +1949,4 @@ async function boot() {
   go();
 }
 loadLocal();
-api("GET", "/me").then(r => { R.me = r.user; boot(); }).catch(() => showLogin());
+api("GET", "/me").then(r => { R.me = r.user; R.selfApprove = r.selfApprove !== false; boot(); }).catch(() => showLogin());

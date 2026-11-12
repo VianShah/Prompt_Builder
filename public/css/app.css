@@ -331,6 +331,10 @@ details > summary::-webkit-details-marker{display:none}
 .cv-k.changed{background:var(--amber-soft);color:var(--amber)}
 .cv-k.new{background:var(--ok-soft);color:var(--ok)}
 .cv-k.removed{background:var(--err-soft);color:var(--err)}
+.cv-k.replaced{background:var(--accent-soft);color:var(--accent)}
+.cv-flash{outline:2px solid var(--accent);outline-offset:2px}
+.cv-ln{color:var(--muted)}
+.cv-list{margin-bottom:8px}.cv-list td{vertical-align:top}.cv-list .nowrap{white-space:nowrap}
 .cv-mode button{font-size:12px;padding:3px 10px}
 .cv-card{border:1px solid var(--line);border-left:4px solid var(--amber);border-radius:var(--r);background:var(--surface);overflow:hidden}
 .cv-card.new{border-left-color:var(--ok)} .cv-card.removed{border-left-color:var(--err)} .cv-card.editing{border-left-color:var(--accent)}

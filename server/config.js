@@ -15,6 +15,9 @@ module.exports = {
   port: Number(process.env.PORT || 3002),
   databaseUrl: process.env.DATABASE_URL || '',
   sessionSecret: process.env.SESSION_SECRET || 'dev-only-secret-change-me',
+  // The FDE / GTM engineer who builds an agent also reviews and approves it. Set SELF_APPROVE=false to
+  // require a second person (the author then can't approve their own version or module).
+  selfApprove: process.env.SELF_APPROVE !== 'false',
   users: parseUsers(process.env.BUILDER_USERS),
   // The existing Kollect dashboard on Render, e.g. https://kollect-xyz.onrender.com
   kollect: {

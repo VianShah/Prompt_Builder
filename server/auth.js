@@ -23,7 +23,7 @@ function login(req, res) {
   const payload = Buffer.from(JSON.stringify({ email: u.email, exp: Date.now() + TTL_MS })).toString('base64url');
   const secure = (req.headers['x-forwarded-proto'] || req.protocol) === 'https';
   res.setHeader('Set-Cookie', `${COOKIE}=${encodeURIComponent(payload + '.' + sign(payload))}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${TTL_MS / 1000}${secure ? '; Secure' : ''}`);
-  res.json({ user: publicUser(u) });
+  res.json({ user: publicUser(u), selfApprove: config.selfApprove });
 }
 function logout(req, res) {
   res.setHeader('Set-Cookie', `${COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`);
