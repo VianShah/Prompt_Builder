@@ -38,6 +38,13 @@ Prompt Builder (this service) ──server-side──► Kollect dashboard (exis
 
 The database table is created on first start. There are no migrations to run.
 
+## Connecting Sarvam on Render
+
+Sarvam's sign-in only accepts callback addresses on `localhost` or addresses Sarvam has allow-listed, so **Connect Sarvam** fails on a Render URL ("Sarvam doesn't allow signing in from this address"). Two ways around it:
+
+1. Ask Sarvam to allow-list `https://<your-service>.onrender.com/api/sarvam/callback`, then use **Connect Sarvam** as normal.
+2. Use a login made on your own computer: run the builder locally, click **Connect Sarvam**, then run `npm run export-sarvam` and copy the one line it prints. On the Render site, open **Agents**, paste it into **Use the login from your computer** and click **Use this login**. The refresh token in the line keeps it signed in. Don't keep using the same login from both places at once: if a refresh on one side replaces the token, export again.
+
 ## First week of use
 
 1. **Live agents → Import live prompt** for each agent. In Sarvam, copy everything from Canvas → Instructions and paste it in. The import is marked live at the Sarvam version Kollect calls.

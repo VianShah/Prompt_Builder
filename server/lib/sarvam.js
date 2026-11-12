@@ -53,7 +53,11 @@ async function clientFor(redirectUri) {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ client_name: 'Kollect Prompt Builder', redirect_uris: [redirectUri], grant_types: ['authorization_code', 'refresh_token'], response_types: ['code'], token_endpoint_auth_method: 'none' }),
   });
-  if (!res.ok || !body.client_id) throw err(`Sarvam refused to register the builder (HTTP ${res.status}).`, 'sarvam_http', 502);
+  if (!res.ok || !body.client_id) {
+    // Sarvam only accepts sign-in callbacks on localhost, or on addresses it has allow-listed. Say so.
+    if (body && body.error === 'invalid_redirect_uri') throw err(`Sarvam doesn't allow signing in from this address (${redirectUri}). It accepts only localhost or addresses it has allow-listed. Sign in on your own computer and import that login here, or ask Sarvam to allow-list this address.`, 'sarvam_redirect', 400);
+    throw err(`Sarvam refused to register the builder (HTTP ${res.status}${body && body.error_description ? `: ${String(body.error_description).slice(0, 200)}` : ''}).`, 'sarvam_http', 502);
+  }
   await db.put('settings', { id: CLIENT_ID, clientId: body.client_id, redirectUri });
   return body.client_id;
 }
@@ -119,6 +123,27 @@ async function status() {
 }
 
 async function clearToken() { sessionId = null; initialized = false; await db.del('settings', TOKEN_ID); }
+
+// Take over a Sarvam login made on another machine (where sign-in is allowed, e.g. localhost). The line
+// comes from scripts/export-sarvam-token.js: the access token, the refresh token and the client they
+// belong to. The refresh token keeps the login alive here. Checked with Sarvam before it is kept.
+async function importConnection(blob, by) {
+  let d = null;
+  try { d = JSON.parse(Buffer.from(String(blob || '').trim(), 'base64').toString('utf8')); } catch (_) { /* below */ }
+  if (!d || d.v !== 1 || !d.token || !d.clientId) throw err('That isn\'t a login line from the export script. Run it again and paste the whole line.', 'bad_login', 400);
+  const prevToken = await db.get('settings', TOKEN_ID), prevClient = await db.get('settings', CLIENT_ID);
+  await db.put('settings', { id: CLIENT_ID, clientId: String(d.clientId), redirectUri: String(d.redirectUri || '') });
+  await db.put('settings', { id: TOKEN_ID, token: String(d.token), refreshToken: d.refreshToken ? String(d.refreshToken) : null, expiresAt: d.expiresAt || new Date(Date.now() + 3600e3).toISOString(),
+    setBy: by, setAt: new Date().toISOString(), lastError: null, kind: 'mcp', imported: true });
+  sessionId = null; initialized = false;
+  try { await callTool('agents', { operation: 'list', params: { limit: 1 } }); }
+  catch (e) {
+    if (prevToken) await db.put('settings', prevToken); else await db.del('settings', TOKEN_ID);
+    if (prevClient) await db.put('settings', prevClient); else await db.del('settings', CLIENT_ID);
+    sessionId = null; initialized = false;
+    throw err(`Sarvam didn't accept that login (${e.publicMessage || e.message}). Sign in again on your computer and export a fresh line.`, 'bad_login', 400);
+  }
+}
 
 // ---------- MCP over streamable HTTP ----------
 let sessionId = null;   // Sarvam's server is stateless today and sends none; kept in case it starts to
@@ -362,4 +387,4 @@ async function commit(appId, description) {
   return v;
 }
 
-module.exports = { listResources, readResource, listAgents, callTool, status, clearToken, startAuth, finishAuth, listTools, livePrompt, extractInstructions, committedVersions, promptText, editDraft, commit };
+module.exports = { importConnection, listResources, readResource, listAgents, callTool, status, clearToken, startAuth, finishAuth, listTools, livePrompt, extractInstructions, committedVersions, promptText, editDraft, commit };

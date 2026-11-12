@@ -190,7 +190,18 @@ const callbackUrl = req => `${req.protocol}://${req.get('host')}/api/sarvam/call
 
 r.get('/sarvam/connect', h(async (req, res) => {
   if (!can(req.user, 'approve')) throw fail(403, 'Only approvers and admins can connect Sarvam.');
-  res.redirect(await sarvam.startAuth(callbackUrl(req), req.user));
+  // A failure here is a page the user lands on, so show it on the Agents page instead of as raw JSON.
+  try { res.redirect(await sarvam.startAuth(callbackUrl(req), req.user)); }
+  catch (e) { res.redirect('/#agents?sarvamError=' + encodeURIComponent(e.publicMessage || e.message)); }
+}));
+
+// Use a Sarvam login made elsewhere (Sarvam only allows sign-in from localhost or allow-listed addresses).
+// The line comes from `npm run export-sarvam` on a computer where Connect works.
+r.post('/sarvam/import-token', h(async (req, res) => {
+  if (!can(req.user, 'approve')) throw fail(403, 'Only approvers and admins can connect Sarvam.');
+  await sarvam.importConnection((req.body || {}).line, req.user.email);
+  await audit(req.user, 'sarvam.import', {});
+  res.json(await sarvam.status());
 }));
 
 r.get('/sarvam/callback', async (req, res) => {
