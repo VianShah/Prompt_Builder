@@ -5,8 +5,8 @@ A web app, run as its own Render service, for the collections voice agents that 
 - **Sync** the live Sarvam agents from Kollect's agent library.
 - **Import** each agent's live prompt once. The text is regrouped into 13 standard sections without being reworded.
 - **Improve** a prompt from UAT, founder or client feedback. Feedback can be pasted text, Excel, CSV or Word. Each item is mapped to the section and block that causes it, then fixed with an AI draft or by hand. Each fix is saved as a new draft version.
-- **Approve** versions. The author can't approve their own version.
-- **Take it live.** Paste the approved text into Sarvam and commit it. The builder then checks through Kollect that the new Sarvam version exists and pins it, so Kollect calls exactly that version. Rollback re-pins the previous version.
+- **Review and approve** versions. The review lists every change by section and line, marked Added, Removed, Modified or Replaced, so nobody has to read the whole prompt. The FDE or GTM engineer who built the agent approves it (`SELF_APPROVE=true`, the default). Set `SELF_APPROVE=false` to require a second person.
+- **Take it live.** **Push and go live** writes only the changed passages into the agent through Sarvam's MCP server (dry run first), commits a new Sarvam version and checks the committed text. If Kollect is connected it also pins that version. **Roll back** re-pins the old version in Kollect when it can; otherwise it commits the old version's prompt again as a new Sarvam version (prompt text only; the greeting and settings stay as they are).
 - **Create** new prompts from the block library using a 10-step wizard: client, bucket, policy, compliance, persona, data mapping, knowledge base, assembly, validation and save.
 
 The stack matches Kollect-StateMachine: Node and Express, a plain HTML/JS front end with no build step, and the same LLMs (GLM 5 on Bedrock, with Gemini as fallback). Data is stored in Render Postgres.
@@ -22,7 +22,7 @@ Prompt Builder (this service) ──server-side──► Kollect dashboard (exis
    └── GLM 5 (Bedrock) → Gemini   (feedback mapping, fix drafts, prompt review, KB drafts, import grouping)
 ```
 
-**What isn't automatic, and why.** Sarvam's API key can't read or write an agent's instructions. Kollect's own `agentVersions.js` notes that the key can't even list versions. Sarvam only exposes agent editing through its MCP server, which needs a browser login every 24 hours. So prompt text moves between Sarvam and the builder by copy and paste: once at import, and once per approved version. The version check, pin and rollback after that are automatic. Everything that touches Sarvam sits behind `SARVAM_PROMPT_PUSH`. If Sarvam gives you API access to app instructions, a `sarvam` mode can be added in `server/routes/prompts.js` (`go-live`) without changing the UI.
+**Sarvam is the source of truth; Kollect is optional.** Reading prompts, pushing, committing, cloning agents and rollback all go through Sarvam's MCP server. Sarvam's API key can't edit prompts and Sarvam won't give that access, so the MCP sign-in is the only way in, and it lasts about 24 hours: sign in again each day (see below). Calls, transcripts and recordings use `SARVAM_API_KEY` and need no daily sign-in. Kollect, when `KOLLECT_BASE_URL` is set and its endpoints answer, only adds catalog details (client, stage, call counts) and version pins.
 
 ## Deploy on Render
 
@@ -58,6 +58,15 @@ Set `SARVAM_API_KEY` (Sarvam > Voice Agents > Settings > API key) on Render. The
 
 After signing in, **Load all prompts** on the Agents page copies every agent's committed prompt in the background, with a progress bar. It stops cleanly if the login lapses.
 
+### Module library (in git)
+
+Modules are JSON files in `library/modules/<MODULE-ID>/<version>.json`, not in the database.
+
+- **On Render:** set `GITHUB_TOKEN` (fine-grained token, *Contents: read and write* on this repo only) and `GITHUB_REPO`. The builder reads the library from the `module-library` branch at start, and every module save, approval or delete is a commit there. It's a separate branch so a module save doesn't redeploy the service. Merge `module-library` into `main` whenever you want the library in `main`.
+- **On your computer:** leave `GITHUB_TOKEN` empty. Modules are written to `library/modules/` in this folder; commit them like any other change.
+- Modules saved in the database before this change are copied into the library once, the first time it starts empty.
+- If GitHub can't be reached at start, the builder still runs, but the Modules page shows the error and saving modules is refused until a restart.
+
 ### Copy your local data to Render
 
 Render's database starts empty. To bring over your local prompts, versions, feedback, tests and modules (never the Sarvam login):
@@ -73,8 +82,8 @@ Nothing deployed is overwritten unless you add `--replace` (see the top of `scri
 
 1. **Live agents → Import live prompt** for each agent. In Sarvam, copy everything from Canvas → Instructions and paste it in. The import is marked live at the Sarvam version Kollect calls.
 2. **Improve from feedback**: drop the UAT sheet in, then click **Map new items to sections**. For each item, **Draft fix** or **Edit by hand**, then **Apply as new draft version**, then **Send for approval**.
-3. **Approvals**: an approver reviews the diff and approves. Then **Copy prompt**, paste it into Sarvam, commit it, and click **Confirm live**. Leave **Pin it in Kollect** ticked.
-4. If something goes wrong, open the version table in **Improve from feedback** and click **Roll back to this** on the previous live version.
+3. **Approvals**: open **See changes**, read the change list (section, line, type), approve, then **Push and go live**. Push to the UAT agent first if one is linked.
+4. If something goes wrong, open the version table and click **Roll back to this** on the previous live version. Without Kollect this commits that version's prompt again in Sarvam.
 
 ## Local development
 
@@ -96,7 +105,8 @@ server/
   db.js               Document store: Postgres (docs table, jsonb) or a JSON file locally
   auth.js             Signed-cookie sessions; roles editor/approver/admin
   lib/kollect.js      Kollect adapter (catalog, versions, pin)
-  lib/llm.js          GLM 5 → Gemini JSON completions with fallback
+  lib/libraryStore.js Module library as JSON files in git (GitHub API on Render, local files otherwise)
+  lib/llm.js          Claude (Bedrock) → GLM 5 → Gemini JSON completions with fallback (LLM_ORDER)
   lib/aiTasks.js      Prompts for mapping, drafting, review, KB, import grouping (+ rule fallbacks)
   routes/agents.js    Sync, Sarvam version check, unpin, import
   routes/prompts.js   Prompts, versions, approvals, go-live, rollback, audit

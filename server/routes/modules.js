@@ -8,6 +8,7 @@ const mt = require('../lib/moduleTasks');
 const pushLib = require('../lib/sarvamPush');
 const core = require('../../shared/promptcore');
 const { can } = require('../auth');
+const config = require('../config');
 const { uid, now, h, fail, audit } = require('../lib/util');
 const { saveOnTop } = require('../lib/versions');
 
@@ -51,7 +52,7 @@ r.get('/modules', h(async (req, res) => {
   const all = await db.list('modules');
   const use = await usage();
   const ids = [...new Set(all.map(m => m.moduleId))];
-  res.json({ items: ids.map(id => {
+  res.json({ library: require('../lib/libraryStore').status(), items: ids.map(id => {
     const vs = all.filter(m => m.moduleId === id).sort((a, b) => cmpV(a.v, b.v));
     const latest = vs[vs.length - 1];
     return { id: latest.id, moduleId: id, v: latest.v, title: latest.title, status: latest.status, purpose: latest.purpose, rules: latest.rules.length, tests: (latest.tests || []).length,
@@ -116,7 +117,7 @@ r.post('/modules/:id/approve', h(async (req, res) => {
   const m = await db.get('modules', req.params.id);
   if (!m) throw fail(404, 'Module not found.');
   if (m.status !== 'draft') throw fail(409, 'Only a draft can be approved.');
-  if (m.owner === req.user.email && req.user.role !== 'admin') throw fail(409, 'Someone other than the author must approve this module.');
+  if (!config.selfApprove && m.owner === req.user.email && req.user.role !== 'admin') throw fail(409, 'Someone other than the author must approve this module.');
   // Fail closed: a module goes into the library only with its tests and no unresolved placeholders.
   const problems = [];
   if (!(m.tests || []).length) problems.push('it has no tests');

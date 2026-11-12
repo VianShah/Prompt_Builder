@@ -16,9 +16,9 @@ app.get('/healthz', async (req, res) => { const d = await db.ping(); res.status(
 app.post('/api/login', auth.login);
 app.post('/api/logout', auth.logout);
 app.use('/api', auth.requireUser);
-app.get('/api/me', (req, res) => res.json({ user: req.user }));
+app.get('/api/me', (req, res) => res.json({ user: req.user, selfApprove: config.selfApprove }));
 app.get('/api/health', async (req, res) => res.json({
-  db: await db.ping(), llm: llm.labels(), kollect: { enabled: kollect.enabled(), baseUrl: config.kollect.baseUrl || null }, sarvamPush: config.sarvamPush,
+  db: await db.ping(), llm: llm.labels(), kollect: { enabled: kollect.enabled(), baseUrl: config.kollect.baseUrl || null }, sarvamPush: config.sarvamPush, library: require('./lib/libraryStore').status(),
 }));
 app.use('/api', require('./routes/agents'));
 app.use('/api', require('./routes/prompts'));
