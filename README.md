@@ -40,10 +40,13 @@ The database table is created on first start. There are no migrations to run.
 
 ## Connecting Sarvam on Render
 
-Sarvam's sign-in only accepts callback addresses on `localhost` or addresses Sarvam has allow-listed, so **Connect Sarvam** fails on a Render URL ("Sarvam doesn't allow signing in from this address"). Two ways around it:
+Sarvam's sign-in only returns to `localhost` unless Sarvam has allow-listed the address, so the normal **Connect Sarvam** button fails on a Render URL. On any address that isn't localhost, the Agents page shows a three-step sign-in that needs no allow-listing:
 
-1. Ask Sarvam to allow-list `https://<your-service>.onrender.com/api/sarvam/callback`, then use **Connect Sarvam** as normal.
-2. Use a login made on your own computer: run the builder locally, click **Connect Sarvam**, then run `npm run export-sarvam` and copy the one line it prints. On the Render site, open **Agents**, paste it into **Use the login from your computer** and click **Use this login**. The refresh token in the line keeps it signed in. Don't keep using the same login from both places at once: if a refresh on one side replaces the token, export again.
+1. Click **Open Sarvam sign-in** (new tab) and approve.
+2. The tab then lands on a page that can't be reached (`localhost:8976`). That's expected. Copy the whole address from its address bar.
+3. Paste it into the box on the Agents page and click **Connect**. The address holds a one-time code that stops working once used.
+
+Alternatives: ask Sarvam to allow-list `https://<your-service>.onrender.com/api/sarvam/callback` (then the normal button works), or sign in on your own computer, run `npm run export-sarvam`, and paste the line it prints under "Or use a login made on your own computer". Don't use the same login in both places at once.
 
 ## First week of use
 

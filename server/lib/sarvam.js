@@ -95,6 +95,23 @@ async function finishAuth(code, state) {
   return saveTokens(body, p.by);
 }
 
+// Sign-in for a site Sarvam hasn't allow-listed (e.g. a Render address). Sarvam accepts a callback on
+// localhost on any port, and nothing has to be listening there: the person signs in at Sarvam, their
+// browser is sent to that unreachable localhost address, and they paste the address (it carries the
+// one-time code) back into the site. The rest is the normal flow: the pending sign-in lives in the database.
+const MANUAL_REDIRECT = 'http://localhost:8976/callback';
+const startAuthManual = user => startAuth(MANUAL_REDIRECT, user);
+async function finishAuthManual(pasted) {
+  const s = String(pasted || '').trim();
+  const qs = s.includes('?') ? s.slice(s.indexOf('?') + 1).split('#')[0] : s.replace(/^[#?]/, '');
+  const q = new URLSearchParams(qs);
+  if (q.get('error')) throw err(`Sarvam said: ${q.get('error_description') || q.get('error')}`, 'bad_login', 400);
+  const code = q.get('code'), state = q.get('state');
+  if (!code || !state) throw err('That isn\'t the address Sarvam sent you to. Copy the whole address from the browser\'s address bar, including everything after the ?', 'bad_login', 400);
+  try { return await finishAuth(code, state); }
+  catch (e) { throw err(e.publicMessage || e.message, 'bad_login', 400); } // 400, not 401: a 401 would sign the person out of the site
+}
+
 async function tryRefresh(t) {
   if (!t.refreshToken) return null;
   const c = await db.get('settings', CLIENT_ID);
@@ -387,4 +404,4 @@ async function commit(appId, description) {
   return v;
 }
 
-module.exports = { importConnection, listResources, readResource, listAgents, callTool, status, clearToken, startAuth, finishAuth, listTools, livePrompt, extractInstructions, committedVersions, promptText, editDraft, commit };
+module.exports = { startAuthManual, finishAuthManual, importConnection, listResources, readResource, listAgents, callTool, status, clearToken, startAuth, finishAuth, listTools, livePrompt, extractInstructions, committedVersions, promptText, editDraft, commit };

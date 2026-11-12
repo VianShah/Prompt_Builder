@@ -305,13 +305,21 @@ function sarvamPanel() {
     : s.expired ? "Your Sarvam sign-in expired."
     : esc(s.lastError);
   const local = /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname);
-  // Sarvam only allows sign-in from localhost (or addresses it has allow-listed): elsewhere, use a login made on your own computer.
-  const imp = canDo("approve") ? `<details class="small" ${local ? "" : "open"} style="margin-top:8px"><summary>${local ? "Use a login from another computer" : "Can't sign in here? Use the login from your computer"}</summary>
-    <div class="stack" style="gap:6px;margin-top:6px"><div class="muted">Sarvam only allows sign-in from localhost, or from addresses it has allow-listed. So sign in on your own computer, then hand that login to this site:</div>
-     <ol style="margin:0 0 0 18px"><li>On your computer, open the builder at <code>localhost</code> and click <b>Connect Sarvam</b>.</li><li>In the builder folder, run <code>npm run export-sarvam</code> and copy the one long line it prints.</li><li>Paste it below and click <b>Use this login</b>.</li></ol>
+  // Sarvam only allows the normal sign-in from localhost (or addresses it has allow-listed). On any other
+  // site: sign in at Sarvam, and paste back the address your browser is sent to.
+  const manual = canDo("approve") && !local ? `<div class="stack small" style="gap:6px;margin-top:8px">
+    <div class="muted">Sarvam only lets this kind of sign-in return to <code>localhost</code>, so it takes three steps:</div>
+    <ol style="margin:0 0 0 18px"><li><a href="/api/sarvam/connect?manual=1" target="_blank" rel="noopener"><b>Open Sarvam sign-in</b></a> (opens a new tab) and approve.</li>
+     <li>The new tab then shows a page that <b>can't be reached</b> (<code>localhost:8976</code>). That's expected. Copy the <b>whole address</b> from its address bar.</li>
+     <li>Paste it here and click <b>Connect</b>.</li></ol>
+    <textarea id="sv-paste" rows="2" class="mono" placeholder="http://localhost:8976/callback?code=…&state=…" spellcheck="false"></textarea>
+    <div class="row"><button class="btn sm primary" data-act="sarvam-finish">Connect</button><span class="muted">The address holds a one-time code. It stops working once used.</span></div></div>` : "";
+  const alt = canDo("approve") ? `<details class="small" style="margin-top:8px"><summary>Or use a login made on your own computer</summary>
+    <div class="stack" style="gap:6px;margin-top:6px"><ol style="margin:0 0 0 18px"><li>On your computer, open the builder at <code>localhost</code> and click <b>Connect Sarvam</b>.</li><li>In the builder folder, run <code>npm run export-sarvam</code> and copy the one long line it prints.</li><li>Paste it below and click <b>Use this login</b>.</li></ol>
      <textarea id="sv-line" rows="3" class="mono" placeholder="Paste the long line here" spellcheck="false"></textarea>
-     <div class="row"><button class="btn sm primary" data-act="sarvam-import">Use this login</button><span class="muted">The line is a secret. Clear your clipboard after pasting.</span></div></div></details>` : "";
-  return `<div class="notice" style="flex-direction:column;align-items:stretch"><div class="row" style="justify-content:space-between;gap:8px"><b>${msg}</b>${canDo("approve") ? `<a class="btn sm ${local ? "primary" : ""}" href="/api/sarvam/connect">${s.hasToken ? "Reconnect Sarvam" : "Connect Sarvam"}</a>` : `<span class="small muted">Ask an approver to connect Sarvam.</span>`}</div>${imp}</div>`;
+     <div class="row"><button class="btn sm" data-act="sarvam-import">Use this login</button><span class="muted">The line is a secret. Don't use the same login in both places at once.</span></div></div></details>` : "";
+  const btn = !canDo("approve") ? `<span class="small muted">Ask an approver to connect Sarvam.</span>` : local ? `<a class="btn sm primary" href="/api/sarvam/connect">${s.hasToken ? "Reconnect Sarvam" : "Connect Sarvam"}</a>` : "";
+  return `<div class="notice" style="flex-direction:column;align-items:stretch"><div class="row" style="justify-content:space-between;gap:8px"><b>${msg}</b>${btn}</div>${manual}${local || !canDo("approve") ? "" : alt}</div>`;
 }
 function agentCard(a) {
   const p = (R.prompts || []).find(x => x.id === a.promptId);
@@ -1499,6 +1507,12 @@ const ACT = {
   "sync-note-x": () => { R.syncNote = ""; render(); },
   "pull-all": el => run(el, async () => { const r = await api("POST", "/agents/pull-prompts"); await reloadAgents(); toast(promptMsg(r)); }, "Pulling…"),
   pull: el => run(el, async () => { const r = await api("POST", `/agents/${encodeURIComponent(el.dataset.id)}/pull`); await reloadAgents(); toast(r.changed ? `Imported as v${r.v}` : "Already up to date with Sarvam"); }, "Pulling…"),
+  "sarvam-finish": el => run(el, async () => {
+    const pasted = ($("#sv-paste") || {}).value || "";
+    if (pasted.trim().length < 10) throw new Error("Paste the address from the page that couldn't be reached.");
+    await api("POST", "/sarvam/finish-manual", { pasted });
+    location.hash = "#agents"; await reloadAgents(); toast("Sarvam is connected. Click Refresh to load the agents.");
+  }, "Connecting…"),
   "sarvam-import": el => run(el, async () => {
     const line = ($("#sv-line") || {}).value || "";
     if (line.trim().length < 40) throw new Error("Paste the whole line that npm run export-sarvam printed.");

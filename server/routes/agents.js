@@ -191,8 +191,17 @@ const callbackUrl = req => `${req.protocol}://${req.get('host')}/api/sarvam/call
 r.get('/sarvam/connect', h(async (req, res) => {
   if (!can(req.user, 'approve')) throw fail(403, 'Only approvers and admins can connect Sarvam.');
   // A failure here is a page the user lands on, so show it on the Agents page instead of as raw JSON.
-  try { res.redirect(await sarvam.startAuth(callbackUrl(req), req.user)); }
+  // ?manual=1: for a site Sarvam hasn't allow-listed. The callback is a localhost address the person
+  // copies back into the site (see POST /sarvam/finish-manual).
+  try { res.redirect(req.query.manual ? await sarvam.startAuthManual(req.user) : await sarvam.startAuth(callbackUrl(req), req.user)); }
   catch (e) { res.redirect('/#agents?sarvamError=' + encodeURIComponent(e.publicMessage || e.message)); }
+}));
+
+r.post('/sarvam/finish-manual', h(async (req, res) => {
+  if (!can(req.user, 'approve')) throw fail(403, 'Only approvers and admins can connect Sarvam.');
+  await sarvam.finishAuthManual((req.body || {}).pasted);
+  await audit(req.user, 'sarvam.connect', { manual: true });
+  res.json(await sarvam.status());
 }));
 
 // Use a Sarvam login made elsewhere (Sarvam only allows sign-in from localhost or allow-listed addresses).
