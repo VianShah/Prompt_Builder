@@ -26,6 +26,20 @@ const cmpV = (a, b) => { const x = vnum(a), y = vnum(b); return (x[0] - y[0]) ||
 const norm = s => String(s || '').toLowerCase().replace(/[^a-z0-9ऀ-ॿ]+/g, ' ').trim();
 
 async function skeletonOf(type) { return (await db.list('skeletons', s => s.agentType === type))[0] || null; }
+// Until a type's structure is confirmed (it comes from live agents, and a new type has none), New prompt
+// uses a standard starter structure, so the first agents of a type can be built. It's never saved.
+const STARTER = {
+  collections: [['introduction', 'Introduction', 'Who the agent is and who it calls for.'], ['environment', 'Environment', 'Call context and the call variables.'], ['objective', 'Objective', 'What a successful call achieves.'],
+    ['rules', 'Rules', 'Compliance and conduct.'], ['conversation-flow', 'Conversation flow', 'The steps of the call.'], ['objection-handling', 'Objection handling', 'Common objections and special cases.', false],
+    ['knowledge-base', 'Knowledge base', 'Product facts and FAQs.', false, true], ['closing', 'Closing', 'How the call ends and what is recorded.']],
+  sales: [['introduction', 'Introduction', 'Who the agent is and who it calls for.'], ['environment', 'Environment', 'Call context and the call variables.'], ['objective', 'Objective', 'What a successful call achieves.'],
+    ['eligibility', 'Eligibility', 'Who qualifies and how to check.'], ['pitch', 'Pitch', 'The offer and its benefits.'], ['objection-handling', 'Objection handling', 'Common objections.', false],
+    ['consent-and-disclosures', 'Consent and disclosures', 'Required disclosures and explicit consent.'], ['knowledge-base', 'Knowledge base', 'Product facts and FAQs.', false, true], ['closing', 'Closing', 'Next steps and how the call ends.']],
+};
+const starterOf = type => ({ agentType: type, starter: true, greeting: { desc: 'The first line the agent speaks.' },
+  sections: STARTER[type].map(([id, title, desc, mandatory = true, kb = false]) => ({ id, title, desc, mandatory, kb, aliases: [] })) });
+// For building prompts: the confirmed structure, or the starter one.
+async function skeletonFor(type) { return (await skeletonOf(type)) || starterOf(type); }
 // Latest version of every library entry of this type.
 async function entriesOf(type) {
   const all = await db.list('modules', m => (m.agentType || 'collections') === type);
@@ -72,7 +86,7 @@ const entryView = m => ({ ref: `M:${m.id}`, id: m.id, moduleId: m.moduleId, v: m
 
 r.get('/library/:type', h(async (req, res) => {
   const type = typeOf(req);
-  const [sk, entries, agents] = await Promise.all([skeletonOf(type), entriesOf(type), agentsOf(type)]);
+  const [sk, entries, agents] = await Promise.all([skeletonFor(type), entriesOf(type), agentsOf(type)]);
   res.json({ type, skeleton: sk, entries: entries.map(entryView), builtins: builtinsFor(type, sk, {}), agents, job: jobs[type] || null });
 }));
 
@@ -180,8 +194,7 @@ r.post('/library/:type/from-docs/save', h(async (req, res) => {
 // ---------- New prompt ----------
 // Start from a live agent: its prompt placed into the skeleton's sections (by headings; AI when headings don't match).
 r.post('/library/:type/source', h(async (req, res) => {
-  const type = typeOf(req), sk = await skeletonOf(type);
-  if (!sk) throw fail(409, 'This agent type has no confirmed structure yet. Set it up on the Library page first.');
+  const type = typeOf(req), sk = await skeletonFor(type);
   const t = await agentText(String((req.body || {}).agentId || ''));
   const split = lt.splitBySkeleton(t.text, sk);
   const placed = Object.values(split.sections).flat().join('').length, total = t.text.length || 1;
@@ -196,8 +209,7 @@ r.post('/library/:type/source', h(async (req, res) => {
 }));
 
 r.post('/library/:type/best', h(async (req, res) => {
-  const type = typeOf(req), sk = await skeletonOf(type);
-  if (!sk) throw fail(409, 'This agent type has no confirmed structure yet.');
+  const type = typeOf(req), sk = await skeletonFor(type);
   const info = (req.body || {}).info || {};
   const candidates = {};
   const add = (sec, c) => (candidates[sec] = candidates[sec] || []).push(c);
@@ -205,6 +217,17 @@ r.post('/library/:type/best', h(async (req, res) => {
   builtinsFor(type, sk, info).forEach(b => add(b.section, { ref: b.ref, title: b.title, purpose: `Built-in (${b.src})`, text: b.text, agents: [], status: 'approved' }));
   const out = await lt.bestModules({ skeleton: sk, info, candidates });
   res.json(out);
+}));
+
+// First draft of every section from the client details (and any documents), for when the library has
+// nothing yet. Nothing is saved: the rules become library entries once the agent is live and extracted.
+r.post('/library/:type/draft', h(async (req, res) => {
+  if (!can(req.user, 'edit')) throw fail(403, 'Your role cannot do this.');
+  const type = typeOf(req), sk = await skeletonFor(type);
+  const { info, docs } = req.body || {};
+  const brief = { name: 'Client details (from New prompt)', text: Object.entries(info || {}).filter(([, v]) => v && (!Array.isArray(v) || v.length)).map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(', ') : v}`).join('\n') };
+  const out = await lt.libraryFromDocs({ agentType: type, docs: [brief, ...(Array.isArray(docs) ? docs : [])], skeleton: sk });
+  res.json({ rules: out.rules, greeting: out.greeting, provider: out.provider });
 }));
 
 // Refine: tailor one rule to this agent, and save the result to the library as a variant of its source.

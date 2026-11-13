@@ -64,7 +64,7 @@ const npVars = np => [...new Set((npAllText(np).match(/\{\{\s*(\w+)\s*\}\}/g) ||
 const NP_STEPS = ["Client", "Source", "Review"];
 function viewNewPrompt() {
   const np = npState(), lib = libOf(np.info.type);
-  const steps = `<div class="np-steps">${NP_STEPS.map((s, i) => `<button type="button" data-act="np-step" data-i="${i}" aria-current="${i === np.step ? "step" : "false"}" ${i > 0 && !(lib && lib.skeleton) ? "disabled" : ""}><span class="n">${i + 1}</span>${s}</button>`).join('<span class="sep">—</span>')}</div>`;
+  const steps = `<div class="np-steps">${NP_STEPS.map((s, i) => `<button type="button" data-act="np-step" data-i="${i}" aria-current="${i === np.step ? "step" : "false"}" ${i > 0 && !lib ? "disabled" : ""}><span class="n">${i + 1}</span>${s}</button>`).join('<span class="sep">—</span>')}</div>`;
   const body = [npClient, npSource, npReview][np.step](np, lib);
   return `<div class="view-head"><div><h1>New prompt</h1><p>${npTypeT(np.info.type)} agent${np.info.client ? ` for ${esc(np.info.client)}` : ""} · saved in this browser as you go</p></div>
    <div class="row" style="gap:8px"><button class="btn ghost" data-act="np-reset">Start over</button></div></div>
@@ -83,8 +83,8 @@ function npClient(np, lib) {
    <label class="f">Anything else the rules should know <span class="hint">(policy, tone, what's not allowed)</span><textarea rows="2" data-np="info.productDesc" id="np-desc">${esc(i.productDesc)}</textarea></label>
    ${trow("Agent voice", "Sets gendered verb forms (bol rahi / bol raha).", npSeg("gender", [["female", "Female"], ["male", "Male"]], i.gender))}
    <div><div class="lbl">Languages</div><div class="row" style="gap:6px">${LANGS.map(l => `<button type="button" class="btn sm" data-act="np-lang" data-l="${l}" aria-pressed="${(i.languages || []).includes(l)}">${l}</button>`).join("")}</div></div>
-   ${!(lib && lib.skeleton) ? `<div class="vitem warn"><span class="ic">!</span><div class="vt"><b>The ${npTypeT(i.type).toLowerCase()} library isn't set up yet</b><span>Its standard structure has to be confirmed once before prompts can be built. <a href="#modules" data-act="lib-open" data-type="${i.type}">Set it up on the Library page</a>.</span></div></div>` : ""}
-   <div class="step-foot"><span></span><button class="btn primary" data-act="np-step" data-i="1" ${lib && lib.skeleton ? "" : "disabled"}>Next: Source →</button></div></div>`;
+   ${lib && lib.skeleton && lib.skeleton.starter ? `<div class="small muted">There's no ${npTypeT(i.type).toLowerCase()} library yet, so this prompt starts from the standard ${npTypeT(i.type).toLowerCase()} structure and you write or draft its rules. Once the agent is live, its rules go into the library for the next one.</div>` : ""}
+   <div class="step-foot"><span></span><button class="btn primary" data-act="np-step" data-i="1" ${lib ? "" : "disabled"}>Next: Source →</button></div></div>`;
 }
 function npSource(np, lib) {
   const agents = (lib.agents || []).filter(a => a.hasPrompt), s = np.source;
@@ -128,7 +128,9 @@ function npReview(np, lib) {
   const filled = sk.sections.filter(s => npRules(np, s.id).length).length;
   return `<div class="stack">
    <div class="row" style="justify-content:space-between;align-items:flex-end"><div><h2>Review</h2><p class="muted">${filled} of ${sk.sections.length} sections filled. Add rules from the library, or let the AI choose the best ones for this agent.</p></div>
-    <button class="btn primary ai" data-act="np-best" ${aiOn() ? "" : "disabled title='No AI model configured'"}>Use the best modules</button></div>
+    ${lib.entries.length || lib.builtins.length ? `<button class="btn primary ai" data-act="np-best" ${aiOn() ? "" : "disabled title='No AI model configured'"}>Use the best modules</button>`
+      : `<button class="btn primary ai" data-act="np-draft" ${aiOn() ? "" : "disabled title='No AI model configured'"} title="Writes a first draft of every section from the client details${kbImp().files.some(f => f.status === "ready") ? " and the documents you added" : ""}">Draft the sections with AI</button>`}</div>
+   ${sk.starter ? `<div class="small muted">Standard ${npTypeT(np.info.type).toLowerCase()} structure (the library has none confirmed yet). ${lib.entries.length ? "" : "Nothing in the library yet: draft the sections with AI, write them, or add facts from documents."}</div>` : ""}
    ${R.npBestNote ? `<div class="small muted">${esc(R.npBestNote)}</div>` : ""}
    <section class="np-sec"><div class="np-sh"><h3>Greeting</h3><span class="chip">required</span><span class="small muted">${esc(sk.greeting.desc || "")}</span></div>
     <textarea rows="2" data-np="greeting" id="np-greeting" placeholder="e.g. Namaste {{customer_name}}, main ${esc(np.info.agentName || "Meera")} bol rahi hoon ${esc(np.info.client || "KreditBee")} se.">${esc(np.greeting)}</textarea></section>
@@ -160,7 +162,7 @@ function viewLibraryPage() {
   const type = R.libType || "collections", lib = libOf(type);
   const tabs = `<div class="subtabs">${NP_TYPES.map(([k, l]) => `<button data-act="lib-type" data-type="${k}" aria-pressed="${k === type}">${l}</button>`).join("")}</div>`;
   if (!lib) return `<div class="view-head"><div><h1>Library</h1></div></div>${tabs}<div class="loading">Loading…</div>`;
-  const sk = lib.skeleton, prop = R.skDraft && R.skDraft.type === type ? R.skDraft : null, job = lib.job;
+  const sk = lib.skeleton && !lib.skeleton.starter ? lib.skeleton : null, prop = R.skDraft && R.skDraft.type === type ? R.skDraft : null, job = lib.job;
   const withPrompt = lib.agents.filter(a => a.hasPrompt).length;
   const head = `<div class="view-head"><div><h1>Library</h1><p>The standard structure and the proven rules for ${npTypeT(type).toLowerCase()} agents. New prompts are built from them.</p></div>${sk ? `<a class="btn primary" href="#create" data-act="np-start" data-type="${type}">+ New ${npTypeT(type).toLowerCase()} prompt</a>` : ""}</div>${libLine()}`;
   // 1. structure
@@ -229,6 +231,17 @@ Object.assign(ACT, {
     R.npBestNote = `The AI added ${n} rule${n === 1 ? "" : "s"}${r.gaps.length ? `; nothing in the library covers ${r.gaps.map(g => (libOf(type).skeleton.sections.find(s => s.id === g) || {}).title || g).join(", ")}` : ""}. Remove what doesn't fit, Refine the rest.`;
     commit();
   }, "Choosing the best rules…"),
+  "np-draft": el => run(el, async () => {
+    const np = npState(), type = np.info.type;
+    const docs = kbImp().files.filter(f => f.status === "ready").map(f => ({ name: f.name, text: f.text || [...f.facts.map(x => `${x.k}: ${x.v}`), ...f.faqs.map(x => `Q: ${x.q}\nA: ${x.a}`)].join("\n") }));
+    const r = await api("POST", `/library/${type}/draft`, { info: np.info, docs });
+    const ids = new Set(libOf(type).skeleton.sections.map(s => s.id));
+    let n = 0; r.rules.forEach(x => { if (npAdd(np, ids.has(x.section) ? x.section : libOf(type).skeleton.sections[0].id, { text: x.text, title: x.title, from: { agent: "AI draft" } })) n++; });
+    if (!np.greeting.trim() && r.greeting) np.greeting = r.greeting;
+    const confirm = r.rules.filter(x => /\[CONFIRM/i.test(x.text)).length;
+    R.npBestNote = `The AI drafted ${n} rule${n === 1 ? "" : "s"}${confirm ? `; ${confirm} need details only you have (marked [CONFIRM: …])` : ""}. Check every one before saving.`;
+    commit();
+  }, "Drafting (about a minute)…"),
   "np-lib": el => { R.npLib = R.npLib === el.dataset.sec ? null : el.dataset.sec; R.npOpen = null; render(); const s = document.getElementById(`np-sec-${el.dataset.sec}`); if (s) s.scrollIntoView({ block: "start", behavior: "smooth" }); },
   "np-lib-x": () => { R.npLib = null; render(); },
   "np-open": el => { R.npOpen = R.npOpen === el.dataset.ref ? null : el.dataset.ref; render(); },
@@ -275,8 +288,8 @@ Object.assign(ACT, {
   "lib-open": el => { R.libType = el.dataset.type; },
   "lib-entry": el => run(el, async () => { await loadMod(el.dataset.id); render(); window.scrollTo(0, 0); }),
   "sk-derive": el => run(el, async () => { const type = R.libType || "collections"; const r = await api("POST", `/library/${type}/skeleton/derive`); R.skDraft = { type, ...r }; render(); }, "Reading the agents…"),
-  "sk-blank": () => { const type = R.libType || "collections"; R.skDraft = { type, greeting: { desc: "The first line the agent speaks." }, sections: ["Introduction", "Environment", "Objective", "Rules", "Closing"].map(t => ({ id: t.toLowerCase(), title: t, mandatory: true, desc: "", aliases: [] })) }; render(); },
-  "sk-edit": () => { const type = R.libType || "collections"; R.skDraft = { type, ...JSON.parse(JSON.stringify(libOf(type).skeleton)) }; render(); },
+  "sk-blank": () => { const type = R.libType || "collections"; const st = JSON.parse(JSON.stringify(libOf(type).skeleton)); delete st.starter; R.skDraft = { type, ...st }; render(); },
+  "sk-edit": () => { const type = R.libType || "collections"; R.skDraft = { type, ...JSON.parse(JSON.stringify(libOf(type).skeleton)) }; delete R.skDraft.starter; render(); },
   "sk-cancel": () => { R.skDraft = null; render(); },
   "sk-add": () => { R.skDraft.sections.push({ id: "", title: "New section", mandatory: false, desc: "", aliases: [] }); render(); },
   "sk-rm": el => { R.skDraft.sections.splice(+el.dataset.i, 1); render(); },
