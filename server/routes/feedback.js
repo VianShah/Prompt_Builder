@@ -7,6 +7,7 @@ const { can } = require('../auth');
 const { uid, now, h, fail, audit, bump, clone } = require('../lib/util');
 
 const r = express.Router();
+const spread = require('../lib/spread');
 const kind = require('../lib/agentKind');
 // Load a prompt and note its agent type (collections / sales) for the AI instructions.
 const getPrompt = async id => { const p = await db.get('prompts', id); if (p) await kind.fromPrompt(p); return p; };
@@ -285,6 +286,7 @@ r.post('/feedback/:id/apply', h(async (req, res) => {
   if (it.map.scope === 'shared' && it.promote !== false) {
     it.promoted = true;
     await db.put('coreChanges', { id: uid(), block: it.map.block, sec, note, feedback: it.text, from: p.name, v: ver.v, by: req.user.email, status: 'to merge into shared blocks' });
+    await shareFix(p, base, it, base.sections, sections, req.user);
   }
   await db.put('feedback', it);
   await audit(req.user, 'feedback.apply', { item: it.id, version: ver.v, updated });
@@ -314,8 +316,9 @@ r.post('/prompts/:id/feedback/apply-batch', h(async (req, res) => {
       const d = reuse ? it.draft : await ai.draftFix(p, { ...base, sections }, it);
       const changed = d.sections || { [sec]: d.revised };
       if (!Object.keys(changed).length || Object.entries(changed).every(([s, t]) => t === sections[s])) throw new Error('No change was drafted.');
+      const before = Object.fromEntries(Object.keys(changed).map(k => [k, sections[k] || '']));
       Object.assign(sections, changed);
-      done.push({ it, summary: d.summary });
+      done.push({ it, summary: d.summary, before, after: changed });
     } catch (e) { failed.push({ id: it.id, text: it.text.slice(0, 80), error: e.message }); }
   }
   if (!done.length) throw fail(502, `No fix could be drafted: ${failed.map(f => f.error).join('; ')}`);
@@ -327,13 +330,45 @@ r.post('/prompts/:id/feedback/apply-batch', h(async (req, res) => {
     fixes: done.map(d => ({ id: d.it.id, text: d.it.text.slice(0, 200), section: d.it.map.section, summary: d.summary, call: d.it.call ? { iid: d.it.call.iid, turn: d.it.call.turn } : null })),
     sarvamText: st ? st.text : null, sourceChunks: st ? st.sourceChunks : null, ...(base.greeting ? { greeting: base.greeting } : {}), ...carrySettings(base) },
     req.user, `Fixes ${done.length} feedback item${done.length > 1 ? 's' : ''}`);
-  for (const { it, summary } of done) {
+  for (const { it, summary, before, after } of done) {
     it.status = 'applied'; it.appliedIn = ver.v; it.appliedVersionId = ver.id;
+    if (it.map.scope === 'shared' && it.promote !== false) await shareFix(p, base, it, before, after, req.user);
     if (it.map.scope === 'shared' && it.promote !== false) { it.promoted = true; await db.put('coreChanges', { id: uid(), block: it.map.block, sec: it.map.section, note: summary, feedback: it.text, from: p.name, v: ver.v, by: req.user.email, status: 'to merge into shared blocks' }); }
     await db.put('feedback', it);
   }
   await audit(req.user, 'feedback.apply_batch', { prompt: p.id, version: ver.v, items: done.length, failed: failed.length });
   res.json({ versionId: ver.id, v: ver.v, updated, applied: done.length, failed, charsBefore, charsAfter: st ? st.text.length : null });
 }));
+
+// A fix marked "every agent": saved to the library (as a new version of the rule it came from, or a new
+// entry), so an approver can choose which other agents get it. Never blocks the fix itself.
+async function shareFix(p, base, it, before, after, user) {
+  try {
+    const changedOnly = Object.fromEntries(Object.entries(after || {}).filter(([k, v]) => (before || {})[k] !== v));
+    const out = await spread.recordSharedFix({ prompt: p, base, item: it, before, after: changedOnly, user });
+    if (out) { const a = p.agentId ? await db.get('agents', p.agentId) : null; it.spread = { moduleDocId: out.moduleDocId, moduleId: out.moduleId, v: out.v, updated: out.updated, passages: out.passages, fromName: a ? a.name : p.name, at: now(), done: {} }; }
+  } catch (e) { console.warn('[spread] could not save the fix to the library:', e.message); }
+}
+
+// The other agents of the same type that could get this fix (those using the rule, or with the same wording, first).
+r.get('/feedback/:id/spread', h(async (req, res) => {
+  const it = await loadItem(req.params.id);
+  if (!it.spread) throw fail(409, 'This fix is not marked for every agent.');
+  res.json({ module: { id: it.spread.moduleDocId, moduleId: it.spread.moduleId, v: it.spread.v, updated: it.spread.updated }, agents: await spread.candidates(it), job: spread.jobs[it.id] || null });
+}));
+// Apply it to the chosen agents: each gets a draft with the fix worked into its own wording.
+r.post('/feedback/:id/spread', h(async (req, res) => {
+  if (!can(req.user, 'approve')) throw fail(403, 'Only approvers choose which agents get a fix.');
+  const it = await loadItem(req.params.id);
+  if (!it.spread) throw fail(409, 'This fix is not marked for every agent.');
+  if (spread.jobs[it.id] && spread.jobs[it.id].state === 'running') return res.json(spread.jobs[it.id]);
+  const allowed = new Set((await spread.candidates(it)).map(a => a.id));
+  const ids = ((req.body || {}).agentIds || []).filter(id => allowed.has(id));
+  if (!ids.length) throw fail(400, 'Pick at least one agent.');
+  spread.jobs[it.id] = { state: 'running', total: ids.length, done: 0, results: [], startedAt: now(), by: req.user.email };
+  spread.run(it, ids, req.user).catch(e => Object.assign(spread.jobs[it.id], { state: 'failed', error: e.message }));
+  res.json(spread.jobs[it.id]);
+}));
+r.get('/feedback/:id/spread/status', h(async (req, res) => res.json(spread.jobs[req.params.id] || { state: 'idle' })));
 
 module.exports = r;

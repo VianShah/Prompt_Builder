@@ -626,3 +626,11 @@ input[type=search]:focus{outline:none;border-color:var(--accent);box-shadow:0 0 
 .open-items{padding:12px 16px;border-radius:var(--r);background:var(--accent-soft)}
 .open-items > summary{cursor:pointer}
 .vitem.info{background:var(--accent-soft)} .vitem.info .ic{color:var(--accent)}
+
+/* Spreading a fix to other agents */
+.sp{display:flex;flex-direction:column;gap:10px;padding:12px 14px;border-radius:var(--r-sm);background:var(--accent-soft)}
+.sp-list{display:flex;flex-direction:column;background:var(--surface);border:1px solid var(--line);border-radius:var(--r-sm)}
+.sp-row{display:flex;align-items:center;gap:10px;padding:8px 12px;border-top:1px solid var(--line);font-size:13.5px;cursor:pointer}
+.sp-row:first-child{border-top:0}
+.sp-row .nm{flex:1;min-width:0}
+.sp-row input{accent-color:var(--accent)}

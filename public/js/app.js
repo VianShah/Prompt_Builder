@@ -1200,7 +1200,8 @@ function fbCard(it, latest) {
    <div class="where">${where}${where ? "<span>·</span>" : ""}<span>${origin}</span></div>
    ${c && c.excerpt ? `<div class="excerpt">${c.excerpt.map(x => `<div class="${(c.issues ? c.issues.some(z => z.turn === x.i) : x.i === c.turn) ? "hit" : ""}"><b>${x.role === "agent" ? "Agent" : "Customer"}:</b> ${esc(x.text.slice(0, 260))}</div>`).join("")}</div>` : ""}
    ${m && (m.diagnosis || m.fix) && it.status !== "applied" ? `<div class="why">${m.diagnosis ? `<span><b>Why:</b> ${esc(m.diagnosis)}</span>` : ""}${m.fix ? `<span><b>Fix:</b> ${esc(m.fix)}</span>` : ""}</div>` : ""}
-   ${it.status === "applied" ? `<div class="small" style="color:var(--ok)"><b>✓ Fixed in v${esc(it.appliedIn)}</b>${it.promoted ? " · logged as a shared-core fix" : ""}</div>` : ""}
+   ${it.status === "applied" ? `<div class="small" style="color:var(--ok)"><b>✓ Fixed in v${esc(it.appliedIn)}</b></div>` : ""}
+   ${it.status === "applied" && it.spread ? spreadPanel(it) : ""}
    ${mapped ? `
      ${it.draft ? `<div class="small"><b>Proposed change</b>${it.draft.how ? ` <span class="chip ${it.draft.how === "added" ? "warn" : "ok"}">${{ added: "Adds a new line", replaced: "Replaces a rule", modified: "Edits existing rules" }[it.draft.how] || "Edits existing rules"}</span>` : ""} ${esc(it.draft.summary)}${it.draft && !stale && it.draft.charsBefore != null && it.draft.charsAfter != null ? ` <span class="muted">(${delta(it.draft.charsAfter - it.draft.charsBefore)} characters)</span>` : ""}${it.draft.lostTags ? ` <span style="color:var(--warn)">(${it.draft.lostTags} block tag${it.draft.lostTags > 1 ? "s" : ""} dropped: check before applying)</span>` : ""}${stale ? ` <span style="color:var(--warn)">(drafted on v${esc(it.draft.baseV)}; the prompt has changed since)</span>` : ""}</div>
        ${Object.entries(it.draft.sections || { [m.section]: it.draft.revised }).map(([s, t]) => `${it.draft.sections && Object.keys(it.draft.sections).length > 1 || s !== m.section ? `<div class="small muted" style="margin-top:4px">In <b>${esc(secTitle(s))}</b>:</div>` : ""}${diffHtml(latest.sections[s] || "", t, !stale && !ed && edit ? { edit: { id: it.id, section: s } } : {})}`).join("")}${it.draft.editedByHand ? `<div class="small muted">You edited parts of this fix by hand.</div>` : ""}` : ""}
@@ -1216,6 +1217,35 @@ function fbCard(it, latest) {
    ${it.status === "new" ? `<div class="small muted">Not placed in the prompt yet.</div>` : ""}
    ${it.status === "dismissed" ? `<div class="row"><span class="small muted">Dismissed.</span><button class="btn sm ghost" data-act="undismiss" data-id="${it.id}">Restore</button></div>` : ""}
   </div>`;
+}
+
+// A fix marked "every agent": it's in the library; the approver picks which other agents get it.
+// Nothing changes on another agent until picked, and each picked agent gets a draft to approve as usual.
+R.sp = R.sp || {};
+function spreadPanel(it) {
+  const S = R.sp[it.id], open = R.spOpen === it.id, sp = it.spread;
+  const head = `<div class="row" style="gap:8px;justify-content:space-between"><span class="small"><b>For every agent.</b> ${sp.updated ? `Library rule <code>${esc(sp.moduleId)}</code> updated to v${esc(sp.v)}` : `Saved to the library as <code>${esc(sp.moduleId)}</code>`}.${Object.keys(sp.done || {}).length ? ` Sent to ${Object.values(sp.done).filter(d => d.result === "draft").length} agent${Object.values(sp.done).filter(d => d.result === "draft").length === 1 ? "" : "s"} so far.` : ""}</span>
+    <button class="btn sm" data-act="sp-open" data-id="${it.id}">${open ? "Close" : "Choose agents…"}</button></div>`;
+  if (!open) return `<div class="sp">${head}</div>`;
+  if (!S) return `<div class="sp">${head}<div class="small muted">Loading…</div></div>`;
+  const job = S.job && S.job.state === "running" ? S.job : null;
+  const todo = S.agents.filter(a => !(a.done && a.done.result === "draft"));
+  const sel = S.agents.filter(a => S.sel.has(a.id));
+  const badge = a => [a.usesRule ? `<span class="chip acc">uses this rule</span>` : "", a.sameWording ? `<span class="chip acc">same wording</span>` : ""].join("");
+  const state = a => !a.done ? "" : a.done.result === "draft" ? `<span class="small" style="color:var(--ok)">✓ draft v${esc(a.done.v)}</span>` : a.done.result === "failed" ? `<span class="small" style="color:var(--err)">failed: ${esc(a.done.error || "")}</span>` : `<span class="small muted">${esc(a.done.result)}</span>`;
+  return `<div class="sp">${head}
+   ${S.agents.length ? `<div class="sp-list">${S.agents.map(a => `<label class="sp-row"><input type="checkbox" data-act-check="sp-sel" data-id="${it.id}" data-a="${esc(a.id)}" ${S.sel.has(a.id) ? "checked" : ""} ${job || !canDo("approve") ? "disabled" : ""}><span class="nm">${esc(a.name)} <span class="muted small">${esc(a.client)}</span></span>${badge(a)}${state(a)}</label>`).join("")}</div>`
+     : `<div class="small muted">No other agent of this type has a prompt in the builder.</div>`}
+   ${job ? `<div class="small">Applying… ${job.done} of ${job.total}</div><div class="bar" style="max-width:none;height:6px"><i style="width:${Math.round(100 * job.done / Math.max(1, job.total))}%"></i></div>`
+     : canDo("approve") && S.agents.length ? `<div class="row" style="gap:8px"><button class="btn sm primary" data-act="sp-go" data-id="${it.id}" data-all="" ${sel.length ? "" : "disabled"}>Apply to selected (${sel.length})</button><button class="btn sm" data-act="sp-go" data-id="${it.id}" data-all="1" ${todo.length ? "" : "disabled"}>Apply to all (${todo.length})</button><span class="small muted">Each gets a draft with the fix worked into its own wording, to review and approve as usual.</span></div>`
+     : !canDo("approve") ? `<div class="small muted">An approver chooses which agents get this fix.</div>` : ""}
+  </div>`;
+}
+async function spLoad(id) { const r = await api("GET", `/feedback/${id}/spread`); const prev = R.sp[id]; R.sp[id] = { agents: r.agents, job: r.job, sel: prev ? prev.sel : new Set(r.agents.filter(a => (a.usesRule || a.sameWording) && !(a.done && a.done.result === "draft")).map(a => a.id)) }; }
+async function spPoll(id) {
+  for (;;) { await new Promise(r => setTimeout(r, 2000)); let j; try { j = await api("GET", `/feedback/${id}/spread/status`); } catch (_) { return; }
+    if (R.sp[id]) R.sp[id].job = j; if (route() === "improve") render();
+    if (j.state !== "running") { await spLoad(id).catch(() => { }); await loadCur(R.curId).catch(() => { }); if (route() === "improve") render(); const n = (j.results || []).filter(x => x.result === "draft").length; toast(`Fix sent to ${n} agent${n === 1 ? "" : "s"} as draft${n === 1 ? "" : "s"}.`); return; } }
 }
 
 // ---------- COMPARE TWO AGENTS ----------
@@ -1692,6 +1722,10 @@ const ACT = {
     const f = D.facts.filter(x => x.on).map(({ k, v, src, kind }) => ({ k, v, src, kind })), q = D.faqs.filter(x => x.on).map(({ q, a, src }) => ({ q, a, src }));
     kb.facts.push(...f); kb.faqs.push(...q); if (D.useOos && D.oos) kb.oos = D.oos;
     I.draft = null; commit(); toast(`Added ${f.length} facts and ${q.length} FAQs to the knowledge base.`); },
+  "sp-open": el => { const id = el.dataset.id; if (R.spOpen === id) { R.spOpen = null; return render(); } R.spOpen = id; render(); spLoad(id).then(render).catch(e => toast(e.message)); },
+  "sp-go": el => run(el, async () => { const id = el.dataset.id, S = R.sp[id]; const ids = el.dataset.all ? S.agents.filter(a => !(a.done && a.done.result === "draft")).map(a => a.id) : [...S.sel];
+    if (el.dataset.all && !confirm(`Apply this fix to all ${ids.length} agents? Each gets a draft to approve; nothing goes live by itself.`)) return;
+    S.job = await api("POST", `/feedback/${id}/spread`, { agentIds: ids }); render(); spPoll(id); }),
   "in-mode": el => { R.inMode = el.dataset.m; render(); },
   jump: el => { const t = document.getElementById(el.dataset.to); if (t) t.scrollIntoView({ behavior: "smooth", block: "start" }); },
   "cv-jump": el => { const t = document.getElementById(el.dataset.to); if (t) { t.scrollIntoView({ behavior: "smooth", block: "center" }); t.parentElement.classList.add("cv-flash"); setTimeout(() => t.parentElement.classList.remove("cv-flash"), 1600); } },
@@ -1888,6 +1922,7 @@ document.addEventListener("change", e => {
   if (el.dataset.bind && (el.type === "checkbox" || el.tagName === "SELECT")) { setPath(L.cfg, el.dataset.bind, el.type === "checkbox" ? el.checked : el.value); R.aiReview = null; commit(); return; }
   if (el.dataset.bind) return;
   const c = el.dataset.actCheck;
+  if (c === "sp-sel") { const S = R.sp[el.dataset.id]; if (S) { el.checked ? S.sel.add(el.dataset.a) : S.sel.delete(el.dataset.a); render(); } return; }
   if (c === "kbd-on") { const D = kbImp().draft; if (D) { D[el.dataset.kind][+el.dataset.i].on = el.checked; render(); } return; }
   if (c === "kbd-oos") { const D = kbImp().draft; if (D) D.useOos = el.checked; return; }
   if (c === "tags") { L.showTags = el.checked; commit(); }
