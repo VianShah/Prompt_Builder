@@ -27,7 +27,7 @@ r.get('/prompts', h(async (req, res) => {
   res.json({ prompts: prompts.map(p => {
     const vs = sortV(versions.filter(v => v.promptId === p.id));
     const latest = vs[vs.length - 1], live = vs.find(v => v.status === 'live');
-    return { id: p.id, name: p.name, agentId: p.agentId, agent: agents.find(a => a.id === p.agentId) || null, createdAt: p.createdAt,
+    return { id: p.id, name: p.name, agentId: p.agentId, agent: agents.find(a => a.id === p.agentId) || null, createdAt: p.createdAt, agentType: p.agentType || null, sourceAgentId: p.sourceAgentId || null,
       latest: latest ? strip(latest) : null, live: live ? strip(live) : null, versionCount: vs.length,
       pending: vs.filter(v => v.status === 'pending').length };
   }) });
@@ -460,6 +460,20 @@ r.post('/prompts/:id/restore-fix', h(async (req, res) => {
 // One step instead of copy → paste → commit → confirm: write the approved version's changed
 // passages into the agent's Sarvam draft, commit it as a new Sarvam version,
 // and mark it live here. { dryRun: true } checks everything with Sarvam and writes nothing.
+// Every {{variable}} the prompt and greeting use must exist on the Sarvam agent. Only the missing ones
+// are added (existing definitions are never touched). If Sarvam can't be read, the push goes ahead as before.
+async function withVars(agent, next) {
+  const used = [...new Set((`${next.sarvamText || ''} ${next.greeting || ''}`.match(/\{\{\s*(\w+)\s*\}\}/g) || []).map(x => x.replace(/[{}\s]/g, '')))].filter(n => /^[a-z_][a-z0-9_]{0,60}$/i.test(n));
+  if (!used.length) return next;
+  let have;
+  try { const g = await require('../lib/sarvam').callTool('agents', { operation: 'get', id: agent.sarvamAppId, params: { include: ['variables'] } }); const v = (g && g.variables && (g.variables.agent_variables || g.variables)) || {}; have = new Set(Object.values(v).map(x => x && x.name).concat(Object.keys(v))); }
+  catch (_) { return next; }
+  const missing = used.filter(n => !have.has(n));
+  if (!missing.length) return next;
+  const patch = { llm_config: { agent_config: { agent_variables: Object.fromEntries(missing.map(n => [n, { name: n, description: ' ', type: 'string', value: '', update_post_interaction: false }])) } } };
+  return { ...next, configPatch: pushLib.deepMerge(next.configPatch || {}, patch), configSummary: [...(next.configSummary || []), ...missing.map(n => `Added variable {{${n}}} (used by the prompt)`)] };
+}
+
 r.post('/versions/:vid/push', h(async (req, res) => {
   const { dryRun, allowDraftChanges, target } = req.body || {};
   const v = await loadVersion(req.params.vid);
@@ -479,7 +493,7 @@ r.post('/versions/:vid/push', h(async (req, res) => {
     const next = { ...v, greeting: v.greeting || liveGreeting, configPatch: pushLib.deepMerge((live && live.configPatch) || {}, v.configPatch || {}) };
     if (!Object.keys(next.configPatch).length) delete next.configPatch;
     let out;
-    try { out = await pushLib.push({ agent: uat, live: null, next, cfg: p.cfg, user: req.user, dryRun: !!dryRun, allowDraftChanges: !!allowDraftChanges }); }
+    try { out = await pushLib.push({ agent: uat, live: null, next: await withVars(uat, next), cfg: p.cfg, user: req.user, dryRun: !!dryRun, allowDraftChanges: !!allowDraftChanges }); }
     catch (e) { if (/no changes compared/.test(e.message)) throw fail(409, `${uat.name} already has exactly this version.`, 'same_as_uat'); throw e; }
     if (dryRun) return res.json({ ...out, target: 'uat', uatName: uat.name });
     v.uat = { agentId: uat.id, name: uat.name, sarvamVersion: out.version, at: now(), by: req.user.email };
@@ -494,7 +508,7 @@ r.post('/versions/:vid/push', h(async (req, res) => {
   if (v.status !== 'approved') throw fail(409, 'Approve this version before taking it live.');
 
   const builtOn = builtOnOf(v, sortV(await db.list('versions', x => x.promptId === p.id)));
-  const out = await pushLib.push({ agent, live, next: v, cfg: p.cfg, user: req.user, dryRun: !!dryRun, allowDraftChanges: !!allowDraftChanges, builtOn });
+  const out = await pushLib.push({ agent, live, next: await withVars(agent, v), cfg: p.cfg, user: req.user, dryRun: !!dryRun, allowDraftChanges: !!allowDraftChanges, builtOn });
   if (dryRun) return res.json({ ...out, builtOn });
 
   if (v.sarvamText !== out.text) v.sourceChunks = null; // passages are re-derived from the committed text when needed

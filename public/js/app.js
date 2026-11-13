@@ -639,7 +639,7 @@ function agentHead(agent, cur) {
   const uat = agent && agent.uatAgentId ? (R.agents || []).find(a => a.id === agent.uatAgentId) : null;
   const uatOf = agent ? (R.agents || []).find(a => a.uatAgentId === agent.id) : null;
   const sub = agent ? [agent.client, live && live.sarvamVersion ? `live in Sarvam v${live.sarvamVersion}` : null, uat ? `UAT agent: ${uat.name}` : null, uatOf ? `UAT agent for ${uatOf.name}` : null, agent.clonedFrom ? `copied from ${agent.clonedFrom.name}` : null, agent.sarvamName && agent.sarvamName !== agent.name ? `Sarvam name: ${agent.sarvamName}` : null].filter(Boolean).join(" · ") : "Not linked to a live agent";
-  const agentItems = agent ? `<hr class="sep">
+  const agentItems = agent ? `<hr class="sep">${canDo("approve") ? `<a href="#" data-act="tpl-toggle" data-id="${esc(agent.id)}">${agent.template ? "✓ Template for new agents (turn off)" : "Use as a template for new agents"}</a>` : ""}
      ${canDo("approve") ? `<a href="#" data-act="uat-modal" data-id="${esc(agent.id)}">${uat ? "Change UAT agent…" : "Set a UAT agent…"}</a><a href="#" data-act="clone-modal" data-id="${esc(agent.id)}">New agent from this one…</a>` : ""}
      ${R.sarvam && R.sarvam.hasToken && canDo("edit") ? `<a href="#" data-act="pull" data-id="${esc(agent.id)}">Reload prompt from Sarvam</a>` : ""}
      ${canDo("edit") ? `<a href="#" data-act="import" data-id="${esc(agent.id)}">Paste prompt manually</a>` : ""}
@@ -724,7 +724,7 @@ function pushControl(cur, v, promote) {
   if (!canDo("golive")) return `<span class="small muted">An approver pushes it live.</span>`;
   if (!(R.sarvam && R.sarvam.hasToken && !R.sarvam.expired)) return `<a class="btn sm" href="#agents">Connect Sarvam to push</a>`;
   if (cur.agent && cur.agent.sarvamAppId) return `<button class="btn sm primary" data-act="push-preview" data-vid="${v.id}">${promote ? `Promote to live (${esc(cur.agent.name)})…` : "Push to Sarvam…"}</button>`;
-  return `<select id="link-${v.id}" style="width:auto;max-width:260px"><option value="">Push to which Sarvam agent?</option>${(R.agents || []).map(a => `<option value="${esc(a.id)}">${esc(a.client)} · ${esc(a.name)}</option>`).join("")}</select><button class="btn sm primary" data-act="link-push" data-pid="${cur.prompt.id}" data-vid="${v.id}">Push…</button>`;
+  return `<button class="btn sm primary" data-act="push-target" data-pid="${cur.prompt.id}" data-vid="${v.id}">Push…</button>`;
 }
 function viewImprove() {
   const agent = R.agentId ? (R.agents || []).find(a => a.id === R.agentId) : null;
@@ -1506,6 +1506,27 @@ async function pushModal(vid, allowDraftChanges, target) {
 
     <div class="row"><button class="btn primary" data-act="push-do" data-vid="${vid}" data-allow="${allowDraftChanges ? 1 : ""}">Push and go live</button><span class="small muted">Commits a new version in Sarvam. Roll back from the version table if needed.</span></div>`}</div>`;
 }
+// Where a prompt built in the builder goes: a new Sarvam agent (copied from a template or agent, or fresh)
+// or an existing one. Then the usual preview (dry run) before anything is written.
+function pushTargetModal(pid, vid) {
+  const p = (R.prompts || []).find(x => x.id === pid) || (R.cur && R.cur.prompt) || {};
+  const type = p.agentType || "collections", ag = (R.agents || []).filter(a => a.sarvamAppId);
+  const tpl = ag.filter(a => a.template), same = ag.filter(a => !a.template && (a.agentType || "collections") === type), other = ag.filter(a => !a.template && (a.agentType || "collections") !== type);
+  const def = p.sourceAgentId && ag.some(a => a.id === p.sourceAgentId) ? p.sourceAgentId : (tpl.find(a => (a.agentType || "collections") === type) || tpl[0] || same[0] || {}).id || "";
+  const opt = a => `<option value="${esc(a.id)}" ${a.id === def ? "selected" : ""}>${esc(a.name)}${a.client ? ` · ${esc(a.client)}` : ""}</option>`;
+  $("#modal").innerHTML = `<div class="panel stack" role="dialog" aria-modal="true" style="max-width:600px">
+   <div class="row" style="justify-content:space-between"><h2>Where should this go?</h2><button class="btn sm ghost" data-act="close-modal">Close</button></div>
+   <label class="check"><input type="radio" name="pt" value="new" checked data-pt> <span><b>A new Sarvam agent</b><div class="small muted">Created now. Its prompt, greeting and the call variables this prompt uses come from here.</div></span></label>
+   <div class="stack pt-new" style="gap:10px;margin-left:26px">
+    <label class="f">Name<input type="text" id="pt-name" value="${esc(p.name || "")}" placeholder="e.g. AxisCard Platinum · Sales"></label>
+    <label class="f">Copy voice, languages and tools from<select id="pt-from">
+     ${tpl.length ? `<optgroup label="Templates">${tpl.map(opt).join("")}</optgroup>` : ""}${same.length ? `<optgroup label="${type === "sales" ? "Sales" : "Collections"} agents">${same.map(opt).join("")}</optgroup>` : ""}${other.length ? `<optgroup label="Other agents">${other.map(opt).join("")}</optgroup>` : ""}
+     <option value="" ${def ? "" : "selected"}>Nothing: start fresh</option></select></label></div>
+   <label class="check"><input type="radio" name="pt" value="existing" data-pt> <span><b>An agent that already exists</b><div class="small muted">Its prompt is replaced by this one. You see the changes before anything is written.</div></span></label>
+   <div class="pt-existing" style="margin-left:26px" hidden><select id="pt-agent"><option value="">Choose…</option>${ag.map(a => `<option value="${esc(a.id)}">${esc(a.name)}${a.client ? ` · ${esc(a.client)}` : ""}</option>`).join("")}</select></div>
+   <div class="row"><button class="btn primary" data-act="push-target-go" data-pid="${pid}" data-vid="${vid}">Continue</button><span class="small muted">Next: a preview of exactly what Sarvam gets.</span></div></div>`;
+  $("#modal").hidden = false;
+}
 // New agent: Sarvam copies an existing agent (prompt, greeting, variables, voice) under a new name.
 function cloneModal(fromId, opts = {}) {
   const ag = (R.agents || []).filter(a => a.sarvamAppId);
@@ -1892,6 +1913,22 @@ const ACT = {
     const r = await api("POST", `/prompts/${R.curId}/edit`, body);
     R.editText = null; await reloadCur(); window.scrollTo(0, 0); toast(savedMsg(r, "your edit"));
   }, "Saving…"),
+  "push-target": el => pushTargetModal(el.dataset.pid, el.dataset.vid),
+  "push-target-go": el => run(el, async () => {
+    const pid = el.dataset.pid, vid = el.dataset.vid, mode = (document.querySelector("input[name=pt]:checked") || {}).value;
+    if (mode === "existing") {
+      const agentId = ($("#pt-agent") || {}).value; if (!agentId) throw new Error("Pick the agent first.");
+      const a = (R.agents || []).find(x => x.id === agentId);
+      if (!confirm(`Replace ${a ? a.name : "that agent"}'s prompt with this one? You see the changes before anything is written.`)) return;
+      await api("PATCH", `/prompts/${pid}`, { agentId });
+    } else {
+      const name = (($("#pt-name") || {}).value || "").trim(); if (name.length < 3) throw new Error("Give the new agent a name.");
+      const r = await api("POST", `/prompts/${pid}/create-agent`, { name, from: ($("#pt-from") || {}).value || null });
+      toast(`Created ${r.name} in Sarvam${r.from ? ` (copied from ${r.from})` : ""}.`);
+    }
+    await Promise.all([loadPrompts(true), loadAgents(true)]); if (route() === "improve") await loadCur(R.curId); render(); pushModal(vid);
+  }, "Working…"),
+  "tpl-toggle": el => run(el, async () => { const a = (R.agents || []).find(x => x.id === el.dataset.id); await api("PATCH", `/agents/${encodeURIComponent(el.dataset.id)}`, { template: !(a && a.template) }); await loadAgents(true); render(); toast(a && a.template ? "No longer a template." : "Now a template: it's offered first when creating new agents."); }),
   "link-push": el => {
     const agentId = ($("#link-" + el.dataset.vid) || {}).value;
     if (!agentId) { toast("Pick the Sarvam agent first."); return; }
@@ -1989,6 +2026,7 @@ document.addEventListener("change", e => {
   const el = e.target;
   if (el.dataset.bind && (el.type === "checkbox" || el.tagName === "SELECT")) { setPath(L.cfg, el.dataset.bind, el.type === "checkbox" ? el.checked : el.value); R.aiReview = null; commit(); return; }
   if (el.dataset.bind) return;
+  if (el.dataset.pt != null) { const n = document.querySelector(".pt-new"), x = document.querySelector(".pt-existing"); if (n && x) { n.hidden = el.value !== "new"; x.hidden = el.value !== "existing"; } return; }
   const c = el.dataset.actCheck;
   if (c === "rv-sel" && R.call && R.call.review) { const rv = R.call.review; R.call.rvSel = R.call.rvSel || new Set(rv.items.map((x, i) => [x, i]).filter(([x]) => x.sign === "-" && !x.addedAs).map(([, i]) => i)); el.checked ? R.call.rvSel.add(+el.dataset.i) : R.call.rvSel.delete(+el.dataset.i); render(); return; }
   if (c === "sp-sel") { const S = R.sp[el.dataset.id]; if (S) { el.checked ? S.sel.add(el.dataset.a) : S.sel.delete(el.dataset.a); render(); } return; }
