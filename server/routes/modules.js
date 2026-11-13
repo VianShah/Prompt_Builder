@@ -148,11 +148,11 @@ r.post('/modules/:id/apply', h(async (req, res) => {
   const out = ai.applyEdits(a.text, list.map(e => ({ old_text: e.old_text, new_text: e.new_text })));
   if (out.failed.length) throw fail(409, `${out.failed.length} change${out.failed.length > 1 ? 's' : ''} no longer match this agent's prompt (it changed since the preview). Preview again.`, 'stale');
   const newText = out.text.replace(/\n{3,}/g, '\n\n').trim();
-  const imp = await ai.importPrompt(newText, `Module ${m.moduleId}`);
+  const imp = await ai.resplit(newText, a.base, `Module ${m.moduleId}`);
   const carry = (a.base.usesModules || []).filter(u => u.moduleId !== m.moduleId);
   const uses = [...carry, { moduleId: m.moduleId, moduleVersion: m.v, docId: m.id, options: options || {}, params: params || {}, rules: list.map(e => e.rule) }];
   const what = `Module ${m.moduleId} v${m.v}: ${list.length} rule${list.length > 1 ? 's' : ''} (${list.filter(e => e.action === 'replace').length} replaced, ${list.filter(e => e.action === 'insert').length} added)`;
-  const { ver, updated } = await saveOnTop(a.prompt, a.base, { sections: imp.sections, order: imp.order, note: what, src: 'Module', sarvamText: newText, sourceChunks: null,
+  const { ver, updated } = await saveOnTop(a.prompt, a.base, { sections: imp.sections, order: imp.order, ...(imp.titles ? { titles: imp.titles } : {}), note: what, src: 'Module', sarvamText: newText, sourceChunks: null,
     ...(a.base.greeting ? { greeting: a.base.greeting } : {}), ...((a.base.configPatch && a.base.status !== 'live') ? { configPatch: a.base.configPatch, configSummary: a.base.configSummary || [] } : {}), usesModules: uses }, req.user, what);
   await audit(req.user, 'module.apply', { module: m.moduleId, v: m.v, agent: a.agent.id, version: ver.v, updated });
   res.json({ versionId: ver.id, v: ver.v, updated, agent: a.agent.name, charsBefore: a.text.length, charsAfter: newText.length });

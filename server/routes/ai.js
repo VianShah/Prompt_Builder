@@ -2,6 +2,8 @@ const express = require('express');
 const ai = require('../lib/aiTasks');
 const { h, fail } = require('../lib/util');
 const r = express.Router();
+const kind = require('../lib/agentKind');
+r.use((req, res, next) => { const t = req.body && req.body.agentType; if (t) kind.set(t); next(); });
 r.post('/ai/review', h(async (req, res) => {
   const { blocks, steps } = req.body || {};
   // The wizard sends its blocks, so each issue can come back with a fix to apply in place.

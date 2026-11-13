@@ -9,11 +9,13 @@ const { uid, now, h, fail, audit, bump } = require('../lib/util');
 
 const { saveOnTop } = require('../lib/versions');
 const r = express.Router();
+const kind = require('../lib/agentKind');
 const sortV = vs => vs.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 
 async function loadPrompt(id) {
   const p = await db.get('prompts', id);
   if (!p) throw fail(404, 'Prompt not found.');
+  await kind.fromPrompt(p); // collections or sales, for the AI instructions
   return p;
 }
 const strip = v => { const { sections, ...rest } = v; return rest; };
@@ -123,10 +125,10 @@ r.post('/prompts/:id/edit', h(async (req, res) => {
   const curGreeting = base.greeting || (((base.sarvamMeta || (live && live.sarvamMeta)) || {}).greeting) || '';
   const textChanged = text !== curText, greetChanged = greeting != null && greeting !== curGreeting.trim();
   if (!textChanged && !greetChanged) throw fail(400, 'Nothing changed.');
-  const imp = textChanged ? await ai.importPrompt(text, 'Edited by hand') : { sections: base.sections, order: base.order };
+  const imp = textChanged ? await ai.resplit(text, base, 'Edited by hand') : { sections: base.sections, order: base.order };
   const what = [textChanged && 'prompt text', greetChanged && 'greeting'].filter(Boolean).join(' and ');
   const note = String((req.body || {}).note || '').trim() || `Edited ${what} by hand`;
-  const { ver, updated } = await saveOnTop(p, base, { sections: imp.sections, order: imp.order, note, src: 'Hand edit',
+  const { ver, updated } = await saveOnTop(p, base, { sections: imp.sections, order: imp.order, ...(imp.titles ? { titles: imp.titles } : {}), note, src: 'Hand edit',
     sarvamText: text, sourceChunks: null, ...(greetChanged ? { greeting } : base.greeting ? { greeting: base.greeting } : {}), ...carrySettings(base) }, req.user, note);
   await audit(req.user, 'prompt.edit', { prompt: p.id, version: ver.v, text: textChanged, greeting: greetChanged, updated });
   res.json({ versionId: ver.id, v: ver.v, updated, charsBefore: curText.length, charsAfter: text.length });
@@ -200,10 +202,10 @@ r.post('/prompts/:id/optimize/apply', h(async (req, res) => {
   const out = ai.applyEdits(text, ordered.map(e => ({ old_text: e.old_text, new_text: e.new_text })));
   if (out.failed.length) throw fail(409, `${out.failed.length} change${out.failed.length > 1 ? 's' : ''} no longer match${out.failed.length > 1 ? '' : 'es'} the text (two ticked changes may overlap). Untick ${out.failed.length > 1 ? 'them' : 'it'} or run Optimize again.`, 'stale');
   const newText = out.text.replace(/\n{3,}/g, '\n\n').trim();
-  const imp = await ai.importPrompt(newText, 'Optimized');
+  const imp = await ai.resplit(newText, base, 'Optimized');
   const types = [...new Set(list.map(e => e.type).filter(Boolean))];
   const what = `Optimized: ${list.length} change${list.length > 1 ? 's' : ''} (${types.join(', ') || 'cleanup'}), ${text.length - newText.length >= 0 ? '−' : '+'}${Math.abs(text.length - newText.length).toLocaleString('en-IN')} characters`;
-  const { ver, updated } = await saveOnTop(p, base, { sections: imp.sections, order: imp.order, note: String(note || '').trim() || what, src: 'Optimize',
+  const { ver, updated } = await saveOnTop(p, base, { sections: imp.sections, order: imp.order, ...(imp.titles ? { titles: imp.titles } : {}), note: String(note || '').trim() || what, src: 'Optimize',
     sarvamText: newText, sourceChunks: null, ...(base.greeting ? { greeting: base.greeting } : {}), ...carrySettings(base),
     optimized: list.map(e => ({ type: e.type, title: String(e.title || '').slice(0, 120), changesBehaviour: !!e.changesBehaviour })) }, req.user, what);
   await audit(req.user, 'prompt.optimize', { prompt: p.id, version: ver.v, changes: list.length, before: text.length, after: newText.length, updated });
@@ -381,10 +383,10 @@ r.post('/versions/:vid/rebase', h(async (req, res) => {
   if (out.already === own.length) throw fail(409, `Everything in this version is already in Sarvam v${newest}. Nothing to rebuild.`, 'up_to_date');
   if (out.failed.length) throw fail(409, `${out.failed.length} of this version's ${own.length} change${own.length > 1 ? 's' : ''} touch text that was changed in Sarvam v${newest}, so they can't be moved over safely. Draft those fixes again on the live version.`, 'rebase_conflict');
   const text = out.text;
-  const imp = await ai.importPrompt(text, `Rebuilt on Sarvam v${newest}`);
+  const imp = await ai.resplit(text, v, `Rebuilt on Sarvam v${newest}`);
   const newBase = versions.find(x => Number(x.sarvamVersion) === Number(newest)) || live;
   const was = v.status;
-  Object.assign(v, { sections: imp.sections, order: imp.order, sarvamText: text, sourceChunks: null, basedOn: newBase ? newBase.id : v.basedOn, rev: (v.rev || 0) + 1, uat: null,
+  Object.assign(v, { sections: imp.sections, order: imp.order, ...(imp.titles ? { titles: imp.titles } : {}), sarvamText: text, sourceChunks: null, basedOn: newBase ? newBase.id : v.basedOn, rev: (v.rev || 0) + 1, uat: null,
     status: ['pending', 'approved'].includes(was) ? 'draft' : was === 'rejected' ? 'draft' : was });
   step(v, req.user, 'rebased', `Rebuilt on Sarvam v${newest} (was built on v${builtOn}): ${own.length} change${own.length > 1 ? 's' : ''} moved over${['pending', 'approved'].includes(was) ? '; needs approval again' : ''}`);
   if (['pending', 'approved'].includes(was)) { v.approvedBy = null; v.approvedAt = null; }
@@ -447,9 +449,9 @@ r.post('/prompts/:id/restore-fix', h(async (req, res) => {
   const out = applyOwn(cur, own);
   if (out.already === own.length) throw fail(409, `Everything in v${f.v} is already in the prompt.`, 'up_to_date');
   if (out.failed.length) throw fail(409, `${out.failed.length} of the ${own.length} change${own.length > 1 ? 's' : ''} in v${f.v} touch text that has changed since, so they can't be restored automatically. Restore an earlier lost fix first if there is one, or re-add this fix as feedback.`, 'restore_conflict');
-  const imp = await ai.importPrompt(out.text, `Restored v${f.v}`);
+  const imp = await ai.resplit(out.text, base, `Restored v${f.v}`);
   const what = `Restored lost fix v${f.v} (Sarvam v${f.sarvamVersion}): ${String(f.note || '').slice(0, 160)}`;
-  const { ver, updated } = await saveOnTop(p, base, { sections: imp.sections, order: imp.order, note: what, src: 'Restore', sarvamText: out.text, sourceChunks: null,
+  const { ver, updated } = await saveOnTop(p, base, { sections: imp.sections, order: imp.order, ...(imp.titles ? { titles: imp.titles } : {}), note: what, src: 'Restore', sarvamText: out.text, sourceChunks: null,
     ...(base.greeting ? { greeting: base.greeting } : {}), ...carrySettings(base), restored: [...(base.restored && base.status !== 'live' ? base.restored : []), f.id] }, req.user, what);
   await audit(req.user, 'version.restore_fix', { prompt: p.id, from: f.v, into: ver.v, updated });
   res.json({ versionId: ver.id, v: ver.v, updated, moved: own.length, charsBefore: cur.length, charsAfter: out.text.length });

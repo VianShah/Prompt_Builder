@@ -264,7 +264,7 @@ r.post('/agents/:id/import', h(async (req, res) => {
 
 // ======================= Call review =======================
 // Every call Sarvam handled for the agent, by date. Read from Sarvam's analytics API.
-async function loadAgent(id) { const a = await db.get('agents', id); if (!a) throw fail(404, 'Unknown agent.'); return a; }
+async function loadAgent(id) { const a = await db.get('agents', id); if (!a) throw fail(404, 'Unknown agent.'); await require('../lib/agentKind').fromAgent(a); return a; }
 const IID_RE = /^\d{8}\/[A-Za-z0-9:._-]{6,120}$/;
 const iidOf = req => { const id = String(req.query.iid || (req.body || {}).iid || ''); if (!IID_RE.test(id)) throw fail(400, 'Bad call id.'); return id; };
 

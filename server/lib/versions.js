@@ -30,6 +30,7 @@ async function saveOnTop(prompt, base, fields, user, what) {
     return { ver: v, updated: true };
   }
   const ver = await db.put('versions', { id: uid(), promptId: prompt.id, v: bump(base.v), status: 'draft', basedOn: base.id, by: user.email, rev: 0,
+    ...(base.titles ? { titles: base.titles } : {}), // the prompt's own section names (New prompt)
     ...fields, history: [{ at: now(), by: user.email, action: 'created', note: what }] });
   await db.put('prompts', { ...prompt, latestVersionId: ver.id });
   return { ver, updated: false };

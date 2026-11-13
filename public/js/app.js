@@ -181,6 +181,8 @@ function saveLocal() { try { localStorage.setItem(KEY, JSON.stringify(L)); } cat
 const R = { sarvam: null, me: null, health: null, agents: null, prompts: null, approvals: null, core: null, cur: null, feedback: null, curId: null, cmpOpen: null, viewPrompt: false, editing: {}, aiReview: null, headers: [] };
 try { R.diffMode = localStorage.getItem("pb-diff-mode") || "split"; } catch (_) { R.diffMode = "split"; }
 const canDo = a => R.me && ({ edit: ["editor", "approver", "admin"], approve: ["approver", "admin"], golive: ["approver", "admin"], rollback: ["approver", "admin"] }[a] || []).includes(R.me.role);
+// Section names of the prompt that's open (prompts built with New prompt keep their own: Pitch, Consent…).
+function SECTION_TITLE_HOOK(id) { const vs = (R.cur && R.cur.versions) || []; for (let i = vs.length - 1; i >= 0; i--) if (vs[i].titles && vs[i].titles[id]) return vs[i].titles[id]; return null; }
 const aiOn = () => R.health && R.health.llm && R.health.llm.length > 0;
 // Reading pictures and scans needs Claude (the other providers here are text only).
 const visionOn = () => !!(R.health && R.health.vision);

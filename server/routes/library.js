@@ -19,7 +19,7 @@ const { can } = require('../auth');
 const { uid, now, h, fail, audit } = require('../lib/util');
 
 const r = express.Router();
-const typeOf = req => { const t = req.params.type; if (!lt.TYPES[t]) throw fail(404, 'Agent type is collections or sales.'); return t; };
+const typeOf = req => { const t = req.params.type; if (!lt.TYPES[t]) throw fail(404, 'Agent type is collections or sales.'); require('../lib/agentKind').set(t); return t; };
 const agentTypeOf = a => a.agentType || 'collections';
 const vnum = v => String(v).split('.').map(Number);
 const cmpV = (a, b) => { const x = vnum(a), y = vnum(b); return (x[0] - y[0]) || ((x[1] || 0) - (y[1] || 0)); };
@@ -261,11 +261,12 @@ r.post('/library/:type/compose', h(async (req, res) => {
   // A draft is always saved, whatever the checks say: open issues and questions are kept with it and shown on its page.
   const secs = (Array.isArray(sections) ? sections : []).map(s => ({ id: String(s.id), title: String(s.title || s.id), rules: (s.rules || []).map(x => String(x.text || '').trim()).filter(Boolean), refs: (s.rules || []).map(x => x.ref).filter(Boolean) })).filter(s => s.rules.length);
   const text = secs.map(s => `## ${s.title}\n\n${s.rules.join('\n\n')}`).join('\n\n');
-  const imp = await ai.importPrompt(text, 'New prompt');
+  // The prompt keeps its own sections (Introduction, Pitch, Consent…) for feedback and fixes.
+  const imp = { sections: Object.fromEntries(secs.map(s => [s.id, s.rules.join('\n\n')])), order: secs.map(s => s.id), titles: Object.fromEntries(secs.map(s => [s.id, s.title])) };
   const uses = [];
   for (const ref of secs.flatMap(s => s.refs)) { if (String(ref).startsWith('M:')) { const m = await db.get('modules', String(ref).slice(2)); if (m) uses.push({ moduleId: m.moduleId, moduleVersion: m.v, docId: m.id }); } else uses.push({ builtin: String(ref).slice(2) }); }
   const prompt = await db.put('prompts', { id: uid(), name: String(name || `${(info && info.client) || 'New'} · ${(info && info.agentName) || 'agent'}`).slice(0, 120), agentId: null, agentType: type, cfg: cfgFrom(info), info: info || {}, createdBy: req.user.email, sourceAgentId: sourceAgentId || null });
-  const ver = await db.put('versions', { id: uid(), promptId: prompt.id, v: '1.0', status: 'draft', by: req.user.email, rev: 0, sections: imp.sections, order: imp.order, sarvamText: text, greeting: String(greeting).trim(),
+  const ver = await db.put('versions', { id: uid(), promptId: prompt.id, v: '1.0', status: 'draft', by: req.user.email, rev: 0, sections: imp.sections, order: imp.order, titles: imp.titles, sarvamText: text, greeting: String(greeting || '').trim(),
     note: 'Built with New prompt', src: 'New prompt', usesModules: uses,
     openIssues: (Array.isArray(issues) ? issues : []).map(x => ({ t: String(x.t || '').slice(0, 200), d: String(x.d || '').slice(0, 400) })).slice(0, 30),
     openQuestions: (Array.isArray(questions) ? questions : []).map(x => ({ section: String(x.section || '').slice(0, 80), rule: String(x.rule || '').slice(0, 300), ask: String(x.ask || '').slice(0, 300) })).slice(0, 60), skeletonSections: secs.map(s => s.id), history: [{ at: now(), by: req.user.email, action: 'created', note: `New prompt (${type})` }] });
