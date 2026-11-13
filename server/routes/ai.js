@@ -3,6 +3,9 @@ const ai = require('../lib/aiTasks');
 const { h, fail } = require('../lib/util');
 const r = express.Router();
 r.post('/ai/review', h(async (req, res) => {
+  const { blocks, steps } = req.body || {};
+  // The wizard sends its blocks, so each issue can come back with a fix to apply in place.
+  if (Array.isArray(blocks) && blocks.length) return res.json(await ai.reviewWithFixes({ blocks, steps }));
   const md = String((req.body || {}).markdown || '');
   if (md.length < 100) throw fail(400, 'Nothing to review.');
   res.json(await ai.review(md));
@@ -11,6 +14,14 @@ r.post('/ai/kb', h(async (req, res) => {
   const { notes, client, product } = req.body || {};
   if (String(notes || '').trim().length < 20) throw fail(400, 'Paste some product notes first.');
   res.json(await ai.kbDraft({ notes, client, product }));
+}));
+// Knowledge base from documents: one batch of extracted text per call (the browser sends the batches).
+r.post('/ai/kb-docs', h(async (req, res) => {
+  const { docs, client, product, agentType } = req.body || {};
+  if (!Array.isArray(docs) || !docs.some(d => d && String(d.text || '').trim().length > 20)) throw fail(400, 'Nothing readable in these documents.');
+  const total = docs.reduce((n, d) => n + String((d && d.text) || '').length, 0);
+  if (total > 200000) throw fail(413, 'This batch is too large. Send at most 200,000 characters at a time.');
+  res.json(await ai.kbFromDocs({ docs, client, product, agentType }));
 }));
 // Compare page: a plain-language summary of how two agents' prompts differ.
 r.post('/ai/compare', h(async (req, res) => {

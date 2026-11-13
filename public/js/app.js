@@ -111,7 +111,7 @@ function diffHtml(a, b, opts = {}) {
       : `<div class="cv-split"><div class="cv-col"><div class="cv-lbl">Before</div>${ctx(h.pre)}<div class="cv-txt">${w.left}</div>${ctx(h.post)}</div><div class="cv-col"><div class="cv-lbl">After</div>${ctx(h.pre)}<div class="cv-txt">${w.right}</div>${ctx(h.post)}</div></div>`;
     return `<div class="cv-card ${h.kind}">${head}${body}</div>`;
   }).join("");
-  return `<div class="cv">${bar}${cards}</div>`;
+  return `<div class="cv">${opts.bare ? "" : bar}${cards}</div>`;
 }
 // Save an edited part of a drafted fix, or undo just that part.
 function hunkChange(el, save) {
@@ -419,7 +419,9 @@ const closeModal = () => { $("#modal").hidden = true; $("#modal").innerHTML = ""
 // ---------- CREATE ----------
 function stepStatus(i, vals) { if (vals.some(v => v.lvl === "err" && v.step === i)) return "bad"; return i < L.step ? "done" : ""; }
 function viewCreate() {
-  const c = L.cfg, vals = validate(c);
+  const c = L.cfg;
+  if (autoMap(c)) saveLocal(); // variables the prompt uses are mapped before anything is checked
+  const vals = validate(c);
   const rail = STEPS.map((s, i) => `<button type="button" class="${stepStatus(i, vals)}" data-act="step" data-i="${i}" ${i === L.step ? 'aria-current="step"' : ""}><span class="n">${stepStatus(i, vals) === "bad" ? "!" : i + 1}</span>${s}</button>`).join("");
   const body = [stepClient, stepObjective, stepPolicy, stepCompliance, stepPersona, stepMapping, stepKB, stepAssembly, stepValidate, stepGenerate][L.step](c, vals);
   return `
@@ -531,30 +533,235 @@ function stepPersona(c) {
   </div>`;
 }
 const ALIASES = { customer_name: ["name", "borrower_name", "cust_name", "user_name"], emi_amount: ["emi", "emi_amt"], emi_due_date: ["due_date", "emi_date"], total_overdue: ["overdue_amount", "overdue", "total_due", "overdue_amt"], outstanding_amount: ["pos", "principal_outstanding", "outstanding"], dpd: ["true_dpd", "days_past_due"], n_loans: ["loan_count", "no_of_loans", "num_loans"], attempt_count: ["attempt_number", "attempt_no_month", "attempt", "attempt_no"], link_live: ["link_active", "payment_link_live", "link_status"], loan_details: ["merchant", "loan_info", "loan_detail"], today_date: ["call_date", "date"], month_end_date: ["month_end", "monthend_date"], prior_context: ["notes", "last_disposition", "history", "prior_notes"] };
-function stepMapping(c) {
-  const heads = R.headers || [];
-  const agents = (R.agents || []);
-  return `<div class="stack">
-  <div><h2>Data mapping</h2><p class="muted">Map the allocation-file columns, or the variables a Sarvam agent declares, to the standard names the blocks use.</p></div>
-  ${agents.length ? `<label class="f">Use the variables of a live agent<select id="f-agentvars" data-act-change="agentvars"><option value="">Choose an agent…</option>${agents.map(a => `<option value="${esc(a.id)}">${esc(a.client)} · ${esc(a.name)} (${(a.variables || []).length} variables)</option>`).join("")}</select></label>` : ""}
-  <div class="dropzone" id="allocDrop">Drop the allocation file (CSV or Excel) to auto-match columns, or <label style="color:var(--accent);cursor:pointer;text-decoration:underline">choose a file<input type="file" id="allocFile" accept=".csv,.xlsx,.xls" hidden></label>. Only the header row is read.${heads.length ? `<div class="small" style="margin-top:6px">${heads.length} columns: ${heads.map(esc).join(", ")}</div>` : ""}</div>
-  <datalist id="heads">${heads.map(h => `<option value="${esc(h)}">`).join("")}</datalist>
-  <div class="tbl-wrap"><table><thead><tr><th>Standard variable</th><th>Meaning</th><th>Spoken?</th><th>Client column</th></tr></thead><tbody>
-  ${SCHEMA.map(s => { const v = c.mapping[s.k]; const miss = s.req && !v; return `<tr><td><code>{${s.k}}</code>${s.req ? ' <span class="chip ' + (miss ? "err" : "") + '">required</span>' : ""}</td><td class="muted">${s.d}</td><td class="muted small">${s.spoken}</td><td style="min-width:160px"><input type="text" list="heads" id="map-${s.k}" data-bind="mapping.${s.k}" value="${esc(v)}" placeholder="not mapped"></td></tr>`; }).join("")}
-  </tbody></table></div></div>`;
+// ---------- Data mapping ----------
+function addExtra(name, from) {
+  const k = snake(name), c = L.cfg; c.extraVars = c.extraVars || [];
+  if (!k) return;
+  if (isStd(k) || stdOf(k)) { const std = stdOf(k) || k; return ACT["map-add"]({ dataset: { k: std } }); }
+  if (c.extraVars.some(x => x.k === k)) return toast(`{${k}} is already added.`);
+  c.extraVars.push({ k, d: "", spoken: false, from: from || "" }); commit();
 }
-function applyHeaders(heads) {
+// Every variable the prompt's blocks actually use is mapped automatically. The column name comes
+// from, in order: the allocation file (if dropped), the name the existing agents already use for it,
+// or the standard name. The user can drop a variable, add one, or add their own client fields.
+const snake = s => String(s || "").toLowerCase().trim().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
+const isStd = k => SCHEMA.some(s => s.k === k);
+// Standard variable a column/variable name stands for (exact or a known alias), or null.
+const stdOf = name => { const n = snake(name); return SCHEMA.find(s => s.k === n || (ALIASES[s.k] || []).includes(n))?.k || null; };
+// Which sections use each variable, from the blocks that are switched on (the variable list itself excluded).
+function varUse(c) {
+  const out = {};
+  assemble(c).forEach(sec => sec.blocks.filter(x => x.on && x.b.id !== "VAR-SCHEMA").forEach(x => (String(x.text).match(/\{([a-z_]+)\}/g) || []).forEach(m => { const k = m.slice(1, -1); (out[k] = out[k] || new Set()).add(secTitle(sec.sec)); })));
+  return out;
+}
+// For each standard variable: the name most of the existing agents use for it, and which agents.
+function agentNames() {
+  const tally = {};
+  (R.agents || []).forEach(a => (a.variables || []).forEach(v => { const k = stdOf(v); if (!k) return; const t = (tally[k] = tally[k] || {}); (t[v] = t[v] || []).push(a.name); }));
+  return Object.fromEntries(Object.entries(tally).map(([k, t]) => { const [name, ags] = Object.entries(t).sort((x, y) => y[1].length - x[1].length)[0]; return [k, { name, agents: ags }]; }));
+}
+function autoMap(c) {
+  c.mapSrc = c.mapSrc || {}; c.mapOff = c.mapOff || []; c.extraVars = c.extraVars || [];
+  const use = varUse(c), heads = R.headers || [], seen = agentNames();
+  let n = 0;
+  SCHEMA.forEach(s => {
+    if (c.mapping[s.k] || c.mapOff.includes(s.k) || !(use[s.k] || s.req)) return;
+    const h = heads.find(x => stdOf(x) === s.k);
+    if (h) { c.mapping[s.k] = h; c.mapSrc[s.k] = "file"; }
+    else if (seen[s.k]) { c.mapping[s.k] = seen[s.k].name; c.mapSrc[s.k] = `agents:${seen[s.k].agents.length}`; }
+    else { c.mapping[s.k] = s.k; c.mapSrc[s.k] = "standard"; }
+    n++;
+  });
+  return n;
+}
+function srcChip(c, k) {
+  const s = (c.mapSrc || {})[k] || "";
+  if (s === "file") return `<span class="chip ok" title="Matched a column in the allocation file">from file</span>`;
+  if (s.startsWith("agents:")) { const n = +s.split(":")[1]; return `<span class="chip acc" title="The name your existing agents use">as in ${n} agent${n === 1 ? "" : "s"}</span>`; }
+  if (s.startsWith("agent:")) return `<span class="chip acc">from ${esc(s.slice(6))}</span>`;
+  if (s === "standard") return `<span class="chip" title="No file or agent had it, so the standard name is used">standard name</span>`;
+  if (s === "manual") return `<span class="chip">set by you</span>`;
+  return c.mapping[k] && c.preset && c.preset !== "blank" ? `<span class="chip">from template</span>` : "";
+}
+function stepMapping(c) {
+  autoMap(c); saveLocal();
+  const heads = R.headers || [], use = varUse(c), off = c.mapOff || [], extras = c.extraVars || [];
+  const inUse = SCHEMA.filter(s => c.mapping[s.k]);
+  const dropped = SCHEMA.filter(s => !c.mapping[s.k] && (use[s.k] || s.req));
+  const optional = SCHEMA.filter(s => !c.mapping[s.k] && !use[s.k] && !s.req);
+  // Columns in the file or other agents' variables that match no standard name: offered as extra fields.
+  const taken = new Set([...Object.values(c.mapping).filter(Boolean).map(snake), ...extras.map(x => x.k)]);
+  const pool = new Map();
+  heads.forEach(h => { if (!stdOf(h) && !taken.has(snake(h))) pool.set(snake(h), "allocation file"); });
+  (R.agents || []).forEach(a => (a.variables || []).forEach(v => { const k = snake(v); if (k && !stdOf(v) && !taken.has(k) && !pool.has(k)) pool.set(k, a.name); }));
+  const row = s => { const u = use[s.k]; const lock = s.req || u; return `<tr>
+    <td style="width:34px"><input type="checkbox" data-act-check="map-on" data-k="${s.k}" checked title="${lock ? "The prompt uses this. Dropping it shows an error until it's mapped again." : "Remove from the prompt"}"></td>
+    <td><code>{${s.k}}</code>${s.req ? ` <span class="chip">required</span>` : ""}<div class="small muted">${esc(s.d)}</div></td>
+    <td class="small muted">${u ? [...u].map(esc).join(", ") : s.req ? "Required by every agent" : "Listed in call inputs only"}</td>
+    <td style="min-width:180px"><input type="text" list="heads" id="map-${s.k}" data-act-input="map-col" data-k="${s.k}" value="${esc(c.mapping[s.k])}"><div style="margin-top:4px">${srcChip(c, s.k)}</div></td></tr>`; };
+  const exRow = (x, i) => `<tr>
+    <td style="width:34px"><input type="checkbox" data-act-check="extra-off" data-i="${i}" checked title="Remove"></td>
+    <td><code>{${esc(x.k)}}</code><div style="margin-top:4px"><span class="chip">client field</span></div></td>
+    <td class="small muted">${x.from ? `Found in ${esc(x.from)}` : "Added by you"}</td>
+    <td style="min-width:220px"><input type="text" data-act-input="extra-d" data-i="${i}" id="exd-${i}" value="${esc(x.d)}" placeholder="What it holds, e.g. home branch"><label class="check small" style="margin-top:6px"><input type="checkbox" data-act-check="extra-spoken" data-i="${i}" ${x.spoken ? "checked" : ""}> The agent may say it</label></td></tr>`;
+  return `<div class="stack">
+  <div><h2>Data mapping</h2><p class="muted">Every variable this prompt uses is mapped for you. Untick what you don't need, add more below, or change a column name.</p></div>
+  <div class="row" style="gap:10px;align-items:stretch">
+   <div class="dropzone" id="allocDrop" style="flex:1;min-width:240px;text-align:left">Drop the client's allocation file (CSV or Excel) to use its exact column names, or <label style="color:var(--accent);cursor:pointer;text-decoration:underline">choose a file<input type="file" id="allocFile" accept=".csv,.xlsx,.xls" hidden></label>.${heads.length ? `<div class="small" style="margin-top:6px">${heads.length} columns read.</div>` : ""}</div>
+   ${(R.agents || []).length ? `<label class="f" style="flex:1;min-width:220px">Or copy the names one agent uses<select id="f-agentvars" data-act-change="agentvars"><option value="">Choose an agent…</option>${(R.agents || []).filter(a => (a.variables || []).length).map(a => `<option value="${esc(a.id)}">${esc(a.name)}${a.client ? ` · ${esc(a.client)}` : ""} (${a.variables.length})</option>`).join("")}</select></label>` : ""}
+  </div>
+  <datalist id="heads">${heads.map(h => `<option value="${esc(h)}">`).join("")}</datalist>
+  <div class="tbl-wrap"><table><thead><tr><th></th><th>Variable</th><th>Used in</th><th>Client column</th></tr></thead><tbody>
+   ${inUse.map(row).join("")}${extras.map(exRow).join("")}
+  </tbody></table></div>
+  ${dropped.length ? `<div class="vitem warn"><span class="ic">!</span><div class="vt"><b>Dropped, but the prompt still uses ${dropped.length === 1 ? "it" : "them"}</b><span>${dropped.map(s => `<a href="#" data-act="map-add" data-k="${s.k}">{${s.k}}</a>`).join(", ")}: click to map again, or switch off the blocks that use ${dropped.length === 1 ? "it" : "them"} on the Assembly step.</span></div></div>` : ""}
+  ${optional.length || pool.size ? `<div class="stack" style="gap:8px"><div class="eyebrow">Also available</div>
+   <div class="row" style="gap:6px">${optional.map(s => `<button type="button" class="btn sm" data-act="map-add" data-k="${s.k}" title="${esc(s.d)}">+ {${s.k}}</button>`).join("")}${[...pool].slice(0, 40).map(([k, from]) => `<button type="button" class="btn sm ghost" data-act="extra-add" data-k="${esc(k)}" data-from="${esc(from)}" title="From ${esc(from)}">+ {${esc(k)}}</button>`).join("")}</div></div>` : ""}
+  <div class="row" style="gap:8px"><input type="text" id="extra-new" placeholder="Add your own field, e.g. branch_name" style="max-width:280px"><button class="btn sm" data-act="extra-new">Add field</button></div>
+  </div>`;
+}
+function applyHeaders(heads, src) {
   const norm = s => String(s).toLowerCase().trim().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
   R.headers = heads; let n = 0;
-  SCHEMA.forEach(s => { const hit = heads.find(h => norm(h) === s.k) || heads.find(h => (ALIASES[s.k] || []).includes(norm(h))); if (hit) { L.cfg.mapping[s.k] = hit; n++; } });
-  commit(); toast(`${heads.length} columns read · ${n} matched`);
+  L.cfg.mapSrc = L.cfg.mapSrc || {}; L.cfg.mapOff = L.cfg.mapOff || [];
+  SCHEMA.forEach(s => { const hit = heads.find(h => norm(h) === s.k) || heads.find(h => (ALIASES[s.k] || []).includes(norm(h))); if (hit && L.cfg.mapSrc[s.k] !== "manual") { L.cfg.mapping[s.k] = hit; L.cfg.mapSrc[s.k] = src || "file"; L.cfg.mapOff = L.cfg.mapOff.filter(k => k !== s.k); n++; } });
+  commit(); toast(`${heads.length} names read · ${n} matched to standard variables`);
+}
+// ---------- Knowledge base from documents ----------
+// Files (or whole folders) are read in the browser. FAQ sheets (question + answer columns) and two-column
+// fact sheets go straight in; everything else is read by the AI in batches. Nothing is added to the
+// knowledge base until the user ticks what to keep.
+const PDFJS_SRC = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js";
+const PDFJS_WORKER = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+const KB_EXT = /\.(xlsx|xls|csv|docx|pdf|txt|md|json|html?)$/i;
+const KB_MAX_FILES = 60, KB_MAX_CHARS = 600000, KB_BATCH = 30000;
+const kbImp = () => R.kbImp || (R.kbImp = { files: [], progress: null, draft: null, paste: "" });
+const KB_KIND_T = { product: "Product", policy: "Policy", process: "Process", contact: "Contact", other: "Other" };
+const kbNorm = t => String(t || "").toLowerCase().replace(/[^a-z0-9ऀ-ॿ]+/g, " ").trim();
+async function kbReadFile(file, name) {
+  const out = { name, size: file.size, text: "", facts: [], faqs: [] };
+  if (/\.(xlsx|xls|csv)$/i.test(file.name)) {
+    await loadScript(XLSX_SRC);
+    const wb = XLSX.read(await file.arrayBuffer(), { type: "array" });
+    const parts = [];
+    wb.SheetNames.forEach(sn => {
+      const rows = XLSX.utils.sheet_to_json(wb.Sheets[sn], { defval: "" }).filter(r => Object.values(r).some(v => String(v).trim()));
+      if (!rows.length) return;
+      const cols = Object.keys(rows[0]), f = re => cols.find(c => re.test(c));
+      const q = f(/question|query|faq|customer (asks|says|question)/i), an = f(/answer|response|reply|agent (says|answer)|solution/i);
+      const k = f(/topic|item|field|parameter|particular|feature|attribute|^name$|key|heading/i), v = f(/value|detail|description|information|^info|policy|rule|text|content/i);
+      const src = wb.SheetNames.length > 1 ? `${name} › ${sn}` : name;
+      if (q && an) rows.forEach(r => { if (String(r[q]).trim() && String(r[an]).trim()) out.faqs.push({ q: String(r[q]).trim(), a: String(r[an]).trim(), src }); });
+      else if (k && v && cols.length <= 3) rows.forEach(r => { if (String(r[k]).trim() && String(r[v]).trim()) out.facts.push({ k: String(r[k]).trim(), v: String(r[v]).trim(), kind: "other", src }); });
+      else parts.push(`Sheet: ${sn}\n` + rows.map(r => cols.filter(c => String(r[c]).trim()).map(c => `${c}: ${String(r[c]).trim()}`).join(" | ")).join("\n"));
+    });
+    out.text = parts.join("\n\n");
+  } else if (/\.docx$/i.test(file.name)) out.text = await fileToText(file);
+  else if (/\.pdf$/i.test(file.name)) {
+    await loadScript(PDFJS_SRC); window.pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS_WORKER;
+    const doc = await window.pdfjsLib.getDocument({ data: await file.arrayBuffer() }).promise;
+    const pages = [];
+    for (let i = 1; i <= Math.min(doc.numPages, 300); i++) { const c = await (await doc.getPage(i)).getTextContent(); pages.push(c.items.map(x => x.str + (x.hasEOL ? "\n" : " ")).join("")); }
+    out.text = pages.join("\n\n");
+    if (!out.text.trim()) throw new Error("No text found. It may be a scanned PDF; use a text PDF or a Word file.");
+  } else if (/\.html?$/i.test(file.name)) out.text = new DOMParser().parseFromString(await file.text(), "text/html").body.textContent || "";
+  else out.text = await file.text();
+  out.text = out.text.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+  return out;
+}
+// Files from a drop: whole folders are walked (hidden files skipped).
+async function filesFromDrop(dt) {
+  const entries = [...(dt.items || [])].map(i => i.webkitGetAsEntry && i.webkitGetAsEntry()).filter(Boolean);
+  if (!entries.length) return [...dt.files].map(f => ({ file: f, path: f.name }));
+  const out = [];
+  const walk = async (e, pre) => {
+    if (e.isFile) out.push({ file: await new Promise((res, rej) => e.file(res, rej)), path: pre + e.name });
+    else if (e.isDirectory) { const rd = e.createReader(); let b; do { b = await new Promise((res, rej) => rd.readEntries(res, rej)); for (const x of b) await walk(x, pre + e.name + "/"); } while (b.length); }
+  };
+  for (const e of entries) await walk(e, "");
+  return out;
+}
+async function kbAddFiles(list) {
+  const I = kbImp(); let added = 0; const skipped = [];
+  for (const { file, path } of list) {
+    if (/(^|\/)[.~]/.test(path)) continue;
+    if (!KB_EXT.test(file.name) || I.files.length >= KB_MAX_FILES) { skipped.push(path); continue; }
+    if (I.files.some(x => x.name === path && x.size === file.size)) continue;
+    const e = { name: path, size: file.size, status: "reading" }; I.files.push(e); render();
+    try { Object.assign(e, await kbReadFile(file, path), { status: "ready" }); added++; if (!e.text && !e.facts.length && !e.faqs.length) { e.status = "error"; e.note = "Nothing readable in it."; } }
+    catch (err) { e.status = "error"; e.note = err.message || "Couldn't read it."; }
+  }
+  render();
+  toast(`${added} file${added === 1 ? "" : "s"} read${skipped.length ? ` · ${skipped.length} skipped (only Excel, CSV, Word, PDF, text and markdown, up to ${KB_MAX_FILES} files)` : ""}`);
+}
+const kbChars = I => I.files.filter(f => f.status === "ready").reduce((n, f) => n + (f.text || "").length, 0);
+function kbBatches(I) {
+  const pieces = [];
+  I.files.filter(f => f.status === "ready" && f.text).forEach(f => {
+    const t = f.text.slice(0, KB_MAX_CHARS);
+    if (t.length <= KB_BATCH) return pieces.push({ name: f.name, text: t });
+    const paras = t.split(/\n\s*\n/); let cur = "", n = 1;
+    paras.forEach(p => { if (cur && cur.length + p.length > KB_BATCH) { pieces.push({ name: f.name, part: n++, text: cur }); cur = ""; } cur += (cur ? "\n\n" : "") + p.slice(0, KB_BATCH); });
+    if (cur) pieces.push({ name: f.name, part: n, text: cur });
+  });
+  const batches = []; let b = [], size = 0, total = 0;
+  for (const p of pieces) { if (total >= KB_MAX_CHARS) break; if (b.length && size + p.text.length > KB_BATCH) { batches.push(b); b = []; size = 0; } b.push(p); size += p.text.length; total += p.text.length; }
+  if (b.length) batches.push(b);
+  return batches;
+}
+async function kbBuild() {
+  const I = kbImp(), kb = L.cfg.kb;
+  const facts = [], faqs = []; let oos = "", errors = 0, provider = "";
+  I.files.filter(f => f.status === "ready").forEach(f => { facts.push(...f.facts); faqs.push(...f.faqs); });
+  const batches = kbBatches(I);
+  if (batches.length && !aiOn()) throw new Error("No AI model is configured, so only FAQ and fact sheets can be imported.");
+  I.progress = { done: 0, total: batches.length }; I.draft = null; render();
+  const queue = [...batches];
+  await Promise.all([0, 1].map(async () => { for (let b; (b = queue.shift());) {
+    try { const r = await api("POST", "/ai/kb-docs", { docs: b.map(p => ({ name: p.name, text: p.text })), client: L.cfg.client.name, product: L.cfg.client.product, agentType: L.cfg.objective });
+      facts.push(...r.facts); faqs.push(...r.faqs); if (r.oos && !oos) oos = r.oos; provider = r.provider || provider; }
+    catch (e) { errors++; }
+    I.progress.done++; render();
+  } }));
+  // Drop repeats, and anything the knowledge base already says.
+  const have = new Set([...kb.facts.map(f => kbNorm(f.k + " " + f.v)), ...kb.faqs.map(f => kbNorm(f.q))]), seen = new Set();
+  const uniq = (arr, key) => arr.filter(x => { const k = key(x); if (!k || have.has(k) || seen.has(k)) return false; seen.add(k); return true; });
+  I.draft = { facts: uniq(facts, f => kbNorm(f.k + " " + f.v)).map(f => ({ ...f, on: true })), faqs: uniq(faqs, f => kbNorm(f.q)).map(f => ({ ...f, on: true })), oos, errors, provider, batches: batches.length };
+  I.progress = null; render();
+}
+function kbImportPanel() {
+  const I = kbImp(), ready = I.files.filter(f => f.status === "ready"), chars = kbChars(I), nb = kbBatches(I).length;
+  const direct = ready.reduce((n, f) => n + f.facts.length + f.faqs.length, 0), D = I.draft;
+  const tick = (kind, i, x) => `<input type="checkbox" data-act-check="kbd-on" data-kind="${kind}" data-i="${i}" ${x.on ? "checked" : ""}>`;
+  return `<div class="panel stack" style="background:var(--sunk);box-shadow:none;border-style:dashed">
+   <div><h3>Build it from the client's documents</h3><p class="small muted">Product sheets, policy PDFs, FAQ spreadsheets, whole folders. Excel FAQ sheets (question and answer columns) go straight in; the rest is read by the AI. You review everything before it's added.</p></div>
+   <div class="dropzone" id="kbDrop">Drop files or folders here, or <label style="color:var(--accent);cursor:pointer;text-decoration:underline">choose files<input type="file" id="kbFiles" multiple accept=".xlsx,.xls,.csv,.docx,.pdf,.txt,.md,.json,.html,.htm" hidden></label> · <label style="color:var(--accent);cursor:pointer;text-decoration:underline">choose a folder<input type="file" id="kbFolder" webkitdirectory multiple hidden></label><div class="small" style="margin-top:4px">Excel, CSV, Word, PDF, text or markdown</div></div>
+   <details><summary class="small muted">Or paste text (notes, an email, a policy extract)</summary><div class="stack" style="gap:8px;margin-top:8px"><textarea id="kb-paste" rows="4" data-act-input="kb-paste" placeholder="Paste here…">${esc(I.paste)}</textarea><div><button class="btn sm" data-act="kb-paste-add">Add as a source</button></div></div></details>
+   ${I.files.length ? `<div class="tbl-wrap"><table><tbody>${I.files.map((f, i) => `<tr><td class="small" style="word-break:break-all">${esc(f.name)}</td>
+     <td class="small muted nowrap">${f.status === "reading" ? "Reading…" : f.status === "error" ? `<span style="color:var(--err)">${esc(f.note || "Couldn't read")}</span>` : [f.faqs && f.faqs.length ? `${f.faqs.length} FAQs` : "", f.facts && f.facts.length ? `${f.facts.length} facts` : "", f.text ? `${fmtN(f.text.length)} characters` : ""].filter(Boolean).join(" · ")}</td>
+     <td style="width:30px"><button class="btn sm ghost" data-act="kb-file-del" data-i="${i}" aria-label="Remove">✕</button></td></tr>`).join("")}</tbody></table></div>
+    <div class="row" style="gap:10px"><button class="btn primary ${nb ? "ai" : ""}" data-act="kb-build" ${ready.length && !I.progress ? "" : "disabled"}>${I.progress ? `Reading ${I.progress.done} of ${I.progress.total}…` : "Build knowledge base"}</button>
+     <span class="small muted">${ready.length} file${ready.length === 1 ? "" : "s"}${direct ? ` · ${direct} items read directly` : ""}${nb ? ` · ${nb} AI read${nb === 1 ? "" : "s"}${chars > KB_MAX_CHARS ? ` (only the first ${fmtN(KB_MAX_CHARS)} characters)` : ""}` : ""}</span>
+     <a href="#" class="small" data-act="kb-files-clear">Clear</a></div>
+    ${I.progress ? `<div class="bar" style="max-width:none;height:6px"><i style="width:${Math.round(100 * I.progress.done / Math.max(1, I.progress.total))}%"></i></div>` : ""}` : ""}
+   ${D ? `<div class="stack" style="gap:10px;border-top:1px solid var(--line);padding-top:12px">
+     <div class="row" style="justify-content:space-between"><b>Found ${D.facts.length} facts and ${D.faqs.length} FAQs</b><span class="small muted">${D.provider ? esc(D.provider) : ""}${D.errors ? ` · <span style="color:var(--warn)">${D.errors} batch${D.errors === 1 ? "" : "es"} failed</span>` : ""}</span></div>
+     ${!D.facts.length && !D.faqs.length ? `<div class="small muted">Nothing new: everything found is already in the knowledge base.</div>` : ""}
+     ${D.facts.some(f => f.kind === "policy") ? `<div class="vitem warn"><span class="ic">!</span><div class="vt"><b>Check the policy facts</b><span>They must match what you set on the Client policy step. The knowledge base never overrides a policy setting.</span></div></div>` : ""}
+     ${Object.keys(KB_KIND_T).map(kind => { const xs = D.facts.map((f, i) => [f, i]).filter(([f]) => f.kind === kind); return xs.length ? `<div class="stack" style="gap:6px"><div class="eyebrow">${KB_KIND_T[kind]} facts · ${xs.length}</div>${xs.map(([f, i]) => `<label class="check small" style="align-items:flex-start">${tick("facts", i, f)}<span><b>${esc(f.k)}:</b> ${esc(f.v)} <span class="muted">· ${esc(f.src || "")}</span></span></label>`).join("")}</div>` : ""; }).join("")}
+     ${D.faqs.length ? `<div class="stack" style="gap:6px"><div class="eyebrow">FAQs · ${D.faqs.length}</div>${D.faqs.map((f, i) => `<label class="check small" style="align-items:flex-start">${tick("faqs", i, f)}<span><b>${esc(f.q)}</b><br>${esc(f.a)} <span class="muted">· ${esc(f.src || "")}</span></span></label>`).join("")}</div>` : ""}
+     ${D.oos ? `<label class="check small">${`<input type="checkbox" data-act-check="kbd-oos" ${D.useOos ? "checked" : ""}>`} Use this out-of-scope line: “${esc(D.oos)}”</label>` : ""}
+     ${D.facts.length || D.faqs.length ? `<div class="row" style="gap:8px"><button class="btn primary" data-act="kb-accept">Add ${D.facts.filter(f => f.on).length + D.faqs.filter(f => f.on).length} to the knowledge base</button><a href="#" class="small" data-act="kbd-all" data-on="0">Untick all</a><a href="#" class="small" data-act="kbd-all" data-on="1">Tick all</a><a href="#" class="small" data-act="kb-discard">Discard</a></div>` : ""}
+   </div>` : ""}
+  </div>`;
 }
 function kbScore(kb) {
   const checks = [
     { t: "At least 3 facts", ok: kb.facts.length >= 3 },
     { t: "Payment channels stated", ok: kb.facts.some(f => /channel|pay/i.test(f.k + f.v)) },
     { t: "At least 5 FAQs from real calls", ok: kb.faqs.length >= 5 },
-    { t: "No hard-coded amounts (use variables)", ok: !(kb.facts.concat(kb.faqs.map(f => ({ k: f.q, v: f.a }))).some(f => /₹\s?\d|\brs\.?\s?\d|\d{3,}\s?(rupees|rs)/i.test(f.v))) },
+    // Fees and limits copied from the client's documents (they carry a source) are product facts, not account amounts.
+    { t: "No hard-coded account amounts (use variables)", ok: !(kb.facts.filter(f => !f.src).concat(kb.faqs.filter(f => !f.src).map(f => ({ k: f.q, v: f.a }))).some(f => /₹\s?\d|\brs\.?\s?\d|\d{3,}\s?(rupees|rs)/i.test(f.v))) },
     { t: "No outcome promises in answers", ok: !kb.faqs.some(f => /will be (waived|approved|removed|updated)|guarantee/i.test(f.a)) },
     { t: "Out-of-scope answer set", ok: kb.oos.trim().length > 10 }
   ];
@@ -563,15 +770,15 @@ function kbScore(kb) {
 function kbEditor(kb, prefix) {
   const score = kbScore(kb);
   return `<div class="stack">
+  ${kbImportPanel()}
   <div class="row" style="justify-content:space-between"><div class="eyebrow">Facts</div><button class="btn sm" data-act="kb-add" data-kind="facts">Add fact</button></div>
-  ${kb.facts.length ? kb.facts.map((f, i) => `<div class="kv"><input type="text" id="${prefix}fk${i}" data-kb="facts.${i}.k" value="${esc(f.k)}" placeholder="Topic"><input type="text" id="${prefix}fv${i}" data-kb="facts.${i}.v" value="${esc(f.v)}" placeholder="What the agent may say"><button class="btn sm ghost" data-act="kb-del" data-kind="facts" data-i="${i}" aria-label="Remove">✕</button></div>`).join("") : `<div class="empty small">No facts yet. Add channels, charges, product rules.</div>`}
+  ${kb.facts.length ? kb.facts.map((f, i) => `<div class="kv" ${f.src ? `title="From ${esc(f.src)}"` : ""}><input type="text" id="${prefix}fk${i}" data-kb="facts.${i}.k" value="${esc(f.k)}" placeholder="Topic"><input type="text" id="${prefix}fv${i}" data-kb="facts.${i}.v" value="${esc(f.v)}" placeholder="What the agent may say"><button class="btn sm ghost" data-act="kb-del" data-kind="facts" data-i="${i}" aria-label="Remove">✕</button></div>`).join("") : `<div class="empty small">No facts yet. Add channels, charges, product rules.</div>`}
   <div class="row" style="justify-content:space-between"><div class="eyebrow">FAQs, in the customer's words</div><button class="btn sm" data-act="kb-add" data-kind="faqs">Add FAQ</button></div>
-  ${kb.faqs.length ? kb.faqs.map((f, i) => `<div class="kv"><input type="text" id="${prefix}q${i}" data-kb="faqs.${i}.q" value="${esc(f.q)}" placeholder="Customer asks…"><input type="text" id="${prefix}a${i}" data-kb="faqs.${i}.a" value="${esc(f.a)}" placeholder="Agent answers…"><button class="btn sm ghost" data-act="kb-del" data-kind="faqs" data-i="${i}" aria-label="Remove">✕</button></div>`).join("") : `<div class="empty small">No FAQs yet.</div>`}
+  ${kb.faqs.length ? kb.faqs.map((f, i) => `<div class="kv" ${f.src ? `title="From ${esc(f.src)}"` : ""}><input type="text" id="${prefix}q${i}" data-kb="faqs.${i}.q" value="${esc(f.q)}" placeholder="Customer asks…"><input type="text" id="${prefix}a${i}" data-kb="faqs.${i}.a" value="${esc(f.a)}" placeholder="Agent answers…"><button class="btn sm ghost" data-act="kb-del" data-kind="faqs" data-i="${i}" aria-label="Remove">✕</button></div>`).join("") : `<div class="empty small">No FAQs yet.</div>`}
   <label class="f">Out-of-scope answer<input type="text" id="${prefix}oos" data-kb="oos" value="${esc(kb.oos)}"></label>
   <div class="panel" style="background:var(--sunk);border:0"><b>KB quality: ${score.pass}/${score.checks.length}</b>
    <div class="stack" style="gap:4px;margin-top:8px">${score.checks.map(ch => `<div class="small"><span style="color:var(--${ch.ok ? "ok" : "warn"});font-weight:700">${ch.ok ? "✓" : "○"}</span> ${ch.t}</div>`).join("")}</div></div>
-  ${aiOn() ? `<details><summary class="btn sm ai">Draft KB from product notes with AI</summary>
-   <div class="stack" style="margin-top:8px"><textarea id="${prefix}notes" rows="5" placeholder="Paste product notes, policy docs or the client's FAQ sheet…"></textarea><div class="row"><button class="btn primary sm ai" data-act="kb-ai" data-prefix="${prefix}">Draft facts and FAQs</button></div></div></details>` : ""}
+
   </div>`;
 }
 function stepKB(c) { return `<div class="stack"><div><h2>Knowledge base</h2><p class="muted">Section 9 of every prompt. The agent may only state facts written here. Good practice is on the <a href="#knowledge">Knowledge base</a> tab.</p></div>${kbEditor(c.kb, "w")}</div>`; }
@@ -586,7 +793,7 @@ function stepAssembly(c) {
        <button class="btn sm ghost" data-act="mv" data-sec="${s.sec}" data-d="-1" aria-label="Move up" ${i === 0 ? "disabled" : ""}>↑</button><button class="btn sm ghost" data-act="mv" data-sec="${s.sec}" data-d="1" aria-label="Move down" ${i === asm.length - 1 ? "disabled" : ""}>↓</button></div>
       <div class="blocks">${s.blocks.map(x => `<div class="blk ${x.on ? "" : "off"}">
         ${OPTIONAL.has(x.b.id) ? `<input type="checkbox" id="blk-${x.b.id}" data-act-check="blk" data-id="${x.b.id}" ${x.on ? "checked" : ""} aria-label="Include ${esc(x.b.t)}" style="margin-top:3px;accent-color:var(--accent)">` : `<span class="lock" style="width:13px;text-align:center" title="${x.b.edit}">${x.b.edit === "locked" ? "■" : "·"}</span>`}
-        <div class="bt"><b>${esc(x.b.t)}</b> <code class="muted">${x.b.id}</code>${L.showTags ? `<pre class="prompt" style="margin-top:6px;max-height:200px">${esc(x.text)}</pre>` : ""}</div>
+        <div class="bt"><b>${esc(x.b.t)}</b> <code class="muted">${x.b.id}</code>${x.edited || x.added ? ` <span class="chip acc">${x.added ? "added in review" : "edited in review"}</span> <a href="#" class="small" data-act="blk-reset" data-id="${x.b.id}">${x.added ? "Remove" : "Restore original"}</a>` : ""}${L.showTags ? `<pre class="prompt" style="margin-top:6px;max-height:200px">${esc(x.text)}</pre>` : ""}</div>
         <div class="row" style="gap:4px">${layerChip(x.b.layer)}<span class="chip src">${esc(x.b.src)}</span></div></div>`).join("")}</div>
     </div>`).join("")}</div></div>`;
 }
@@ -600,9 +807,29 @@ function stepValidate(c, vals) {
    <div id="aiReview" class="stack" style="gap:6px;margin-top:10px">${R.aiReview ? renderReview(R.aiReview) : ""}</div></div>
   </div>`;
 }
+// AI review results. Each issue carries a fix that can be applied right here: new wording for a block,
+// an added rule, or the setup step to change. Applied fixes can be undone.
+function curBlockText(id) { for (const sec of assemble(L.cfg)) { const x = sec.blocks.find(y => y.b.id === id); if (x) return x.text; } return null; }
 function renderReview(list) {
   if (!list.length) return `<div class="vitem ok"><span class="ic">✓</span><div class="vt"><b>No issues found by the AI review</b></div></div>`;
-  return list.map(r => `<div class="vitem ${r.severity === "high" ? "err" : r.severity === "medium" ? "warn" : "info"}"><span class="ic">${r.severity === "high" ? "✕" : "!"}</span><div class="vt"><b>${esc(r.section)}: ${esc(r.issue)}</b><span>${esc(r.suggestion)}</span></div></div>`).join("");
+  const open = list.filter(r => r.fix && r.fix.type !== "setting" && !r.applied && !(r.fix.type === "edit" && curBlockText(r.fix.block) !== r.fix.before));
+  return `${open.length > 1 ? `<div class="row" style="justify-content:space-between"><span class="small muted">${open.length} fixes ready to apply</span><button class="btn sm primary" data-act="rv-all">Apply all ${open.length} fixes</button></div>` : ""}
+  ${list.map((r, i) => {
+    const f = r.fix, lvl = r.severity === "high" ? "err" : r.severity === "medium" ? "warn" : "info";
+    const stale = f && f.type === "edit" && !r.applied && curBlockText(f.block) !== f.before;
+    const body = !f ? `<div class="small muted">No automatic fix for this one. ${esc(r.suggestion)}</div>`
+      : f.type === "setting" ? `<div class="row" style="gap:8px"><span class="small"><b>Change on ${esc(f.step)}:</b> ${esc(f.change)}</span><button class="btn sm" data-act="step" data-i="${STEPS.indexOf(f.step)}">Go to ${esc(f.step)}</button></div>`
+      : `${f.type === "edit" ? `<div class="small muted">Rewords <code>${esc(f.block)}</code> in ${esc(secTitle(f.sec))}</div>${diffHtml(f.before, f.text, { bare: true })}` : `<div class="small muted">Adds a rule to ${esc(secTitle(f.sec))}</div>${diffHtml("", f.text, { bare: true })}`}
+        <div class="row" style="gap:8px">${r.applied ? `<span class="small" style="color:var(--ok)"><b>✓ Fixed</b></span><a href="#" class="small" data-act="rv-undo" data-i="${i}">Undo</a>` : stale ? `<span class="small" style="color:var(--warn)">This block changed since the review. Run the review again.</span>` : `<button class="btn sm primary" data-act="rv-apply" data-i="${i}">Apply fix</button>`}</div>`;
+    return `<div class="fb" style="gap:8px;${r.applied ? "background:var(--sunk);box-shadow:none" : ""}"><div class="row" style="gap:8px;align-items:flex-start"><span class="sev ${esc(r.severity)}"></span><div style="flex:1;min-width:0"><b>${esc(secTitle(r.section) || r.section)}: ${esc(r.issue)}</b><div class="small muted">${esc(r.suggestion)}</div></div><span class="chip ${lvl}">${esc(r.severity)}</span></div>${body}</div>`;
+  }).join("")}`;
+}
+function applyReviewFix(r) {
+  const f = r.fix, c = L.cfg; c.overrides = c.overrides || {}; c.addons = c.addons || {};
+  if (!f || f.type === "setting" || r.applied) return false;
+  if (f.type === "edit") { if (curBlockText(f.block) !== f.before) return false; r.undo = { prev: c.overrides[f.block] }; c.overrides[f.block] = f.text; }
+  else { c.addons[f.sec] = [...(c.addons[f.sec] || []), f.text]; }
+  r.applied = true; return true;
 }
 function stepGenerate(c, vals) {
   const errs = vals.filter(v => v.lvl === "err");
@@ -1572,7 +1799,16 @@ const ACT = {
   }, "Thinking…"),
   canon: () => { L.cfg.order = [...CANON]; commit(); },
   mv: el => { const o = L.cfg.order, i = o.indexOf(el.dataset.sec), j = i + (+el.dataset.d); if (j < 0 || j >= o.length) return; [o[i], o[j]] = [o[j], o[i]]; commit(); },
-  "ai-review": el => run(el, async () => { const r = await api("POST", "/ai/review", { markdown: toMarkdown(header(L.cfg, "draft"), L.cfg.order, sectionsFrom(L.cfg), false) }); R.aiReview = r.issues; render(); }, "Reviewing…"),
+  "ai-review": el => run(el, async () => {
+    const blocks = assemble(L.cfg).flatMap(sec => sec.blocks.filter(x => x.on).map(x => ({ id: x.b.id, sec: sec.sec, locked: fixedBlock(x.b), text: x.text })));
+    const r = await api("POST", "/ai/review", { blocks, steps: STEPS.slice(0, 7) }); R.aiReview = r.issues; render(); }, "Reviewing (about a minute)…"),
+  "rv-apply": el => { const r = (R.aiReview || [])[+el.dataset.i]; if (r && applyReviewFix(r)) { commit(); toast("Fix applied. It's in the prompt now."); } else toast("That fix no longer fits. Run the review again."); },
+  "rv-all": () => { let n = 0; (R.aiReview || []).forEach(r => { if (applyReviewFix(r)) n++; }); commit(); toast(`${n} fix${n === 1 ? "" : "es"} applied.`); },
+  "rv-undo": el => { const r = (R.aiReview || [])[+el.dataset.i], c = L.cfg; if (!r || !r.applied) return; const f = r.fix;
+    if (f.type === "edit") { if (r.undo && r.undo.prev != null) c.overrides[f.block] = r.undo.prev; else delete c.overrides[f.block]; }
+    else { const a = c.addons[f.sec] || [], k = a.lastIndexOf(f.text); if (k >= 0) a.splice(k, 1); }
+    r.applied = false; commit(); toast("Undone."); },
+  "blk-reset": el => { const c = L.cfg, id = el.dataset.id, m = id.match(/^ADD-(.+)-(\d+)$/); if (m) { if (c.addons && c.addons[m[1]]) c.addons[m[1]].splice(+m[2] - 1, 1); } else if (c.overrides) delete c.overrides[id]; commit(); },
   "save-prompt": el => run(el, async () => {
     const c = L.cfg, v = L.genVersion || "1.0";
     const r = await api("POST", "/prompts", { name: `${c.client.name || "Untitled"} · ${bucketT(c.bucket)}`, cfg: c, sections: sectionsFrom(c), order: c.order, version: v, agentId: L.linkAgent || null });
@@ -1709,6 +1945,20 @@ const ACT = {
     closeModal(); await go();
     toast(`Rebuilt v${r.v} on Sarvam v${r.newest}: ${r.moved} change${r.moved === 1 ? "" : "s"} moved over, newer fixes kept.${r.reapprove ? " It needs approval again." : ""}`);
   }, "Rebuilding…"),
+  "kb-build": el => run(el, kbBuild, "Reading…"),
+  "kb-file-del": el => { kbImp().files.splice(+el.dataset.i, 1); render(); },
+  "kb-files-clear": () => { R.kbImp = null; render(); },
+  "kb-discard": () => { kbImp().draft = null; render(); },
+  "kbd-all": el => { const D = kbImp().draft; if (!D) return; [...D.facts, ...D.faqs].forEach(x => x.on = el.dataset.on === "1"); render(); },
+  "kb-paste-add": () => { const I = kbImp(), t = (I.paste || "").trim(); if (t.length < 20) return toast("Paste some text first."); I.files.push({ name: `Pasted text ${I.files.filter(f => /^Pasted text/.test(f.name)).length + 1}`, size: t.length, text: t, facts: [], faqs: [], status: "ready" }); I.paste = ""; render(); },
+  "kb-accept": () => { const I = kbImp(), D = I.draft, kb = L.cfg.kb; if (!D) return;
+    const f = D.facts.filter(x => x.on).map(({ k, v, src, kind }) => ({ k, v, src, kind })), q = D.faqs.filter(x => x.on).map(({ q, a, src }) => ({ q, a, src }));
+    kb.facts.push(...f); kb.faqs.push(...q); if (D.useOos && D.oos) kb.oos = D.oos;
+    I.draft = null; commit(); toast(`Added ${f.length} facts and ${q.length} FAQs to the knowledge base.`); },
+  "map-add": el => { const k = el.dataset.k, c = L.cfg; c.mapOff = (c.mapOff || []).filter(x => x !== k); c.mapSrc = c.mapSrc || {}; const seen = agentNames()[k], h = (R.headers || []).find(x => stdOf(x) === k);
+    c.mapping[k] = h || (seen && seen.name) || k; c.mapSrc[k] = h ? "file" : seen ? `agents:${seen.agents.length}` : "standard"; commit(); },
+  "extra-add": el => { addExtra(el.dataset.k, el.dataset.from); },
+  "extra-new": () => { const v = ($("#extra-new") || {}).value || ""; if (!snake(v)) return toast("Type a field name first."); addExtra(v, ""); },
   "in-mode": el => { R.inMode = el.dataset.m; render(); },
   jump: el => { const t = document.getElementById(el.dataset.to); if (t) t.scrollIntoView({ behavior: "smooth", block: "start" }); },
   "cv-jump": el => { const t = document.getElementById(el.dataset.to); if (t) { t.scrollIntoView({ behavior: "smooth", block: "center" }); t.parentElement.classList.add("cv-flash"); setTimeout(() => t.parentElement.classList.remove("cv-flash"), 1600); } },
@@ -1885,6 +2135,9 @@ document.addEventListener("input", e => {
   if (a === "channels") { L.cfg.policy.channels = el.value.split(",").map(s => s.trim()).filter(Boolean); commit(false); }
   if (a === "ver") { L.genVersion = el.value.trim() || "1.0"; saveLocal(); const o = $("#mdOut"); if (o) o.textContent = toMarkdown(header(L.cfg, L.genVersion), L.cfg.order, sectionsFrom(L.cfg), L.genTags !== false); }
   if (a === "raw") { L.fbRaw = el.value; saveLocal(); }
+  if (a === "kb-paste") { kbImp().paste = el.value; return; }
+  if (a === "map-col") { const k = el.dataset.k; L.cfg.mapping[k] = el.value.trim(); L.cfg.mapSrc = L.cfg.mapSrc || {}; L.cfg.mapSrc[k] = "manual"; commit(false); }
+  if (a === "extra-d") { const x = (L.cfg.extraVars || [])[+el.dataset.i]; if (x) { x.d = el.value; commit(false); } }
   if (el.id === "flag-note" && R.call) R.call.flagNote = el.value;
   if (el.dataset.gt != null && R.call && R.call.sel && R.call.sel[el.dataset.gt]) R.call.sel[el.dataset.gt][el.dataset.gf] = el.value;
   if (el.dataset.gnote && R.call) R.call.gnote = el.value;
@@ -1902,6 +2155,11 @@ document.addEventListener("change", e => {
   if (el.dataset.bind && (el.type === "checkbox" || el.tagName === "SELECT")) { setPath(L.cfg, el.dataset.bind, el.type === "checkbox" ? el.checked : el.value); R.aiReview = null; commit(); return; }
   if (el.dataset.bind) return;
   const c = el.dataset.actCheck;
+  if (c === "kbd-on") { const D = kbImp().draft; if (D) { D[el.dataset.kind][+el.dataset.i].on = el.checked; render(); } return; }
+  if (c === "kbd-oos") { const D = kbImp().draft; if (D) D.useOos = el.checked; return; }
+  if (c === "map-on" && !el.checked) { const k = el.dataset.k; L.cfg.mapping[k] = ""; L.cfg.mapOff = [...new Set([...(L.cfg.mapOff || []), k])]; commit(); return; }
+  if (c === "extra-off" && !el.checked) { L.cfg.extraVars.splice(+el.dataset.i, 1); commit(); return; }
+  if (c === "extra-spoken") { const x = (L.cfg.extraVars || [])[+el.dataset.i]; if (x) { x.spoken = el.checked; commit(false); } return; }
   if (c === "tags") { L.showTags = el.checked; commit(); }
   if (c === "gtags") { L.genTags = el.checked; commit(); }
   if (c === "blk") { const id = el.dataset.id, o = L.cfg.off; el.checked ? o.splice(o.indexOf(id), 1) : o.push(id); commit(); }
@@ -1932,9 +2190,10 @@ document.addEventListener("change", e => {
   if (a === "link") { L.linkAgent = el.value; saveLocal(); }
   if (a === "cmp-pick") { R.cmpPick = [$("#cmp-a").value, $("#cmp-b").value]; render(); cmpLoad(); }
   if (a === "resec") api("PATCH", `/feedback/${el.dataset.id}`, { section: el.value }).then(reloadCur).catch(err => toast(err.message));
-  if (a === "agentvars") { const ag = (R.agents || []).find(x => x.id === el.value); if (ag) applyHeaders(ag.variables || []); }
+  if (a === "agentvars") { const ag = (R.agents || []).find(x => x.id === el.value); if (ag) { const keep = R.headers; applyHeaders(ag.variables || [], `agent:${ag.name}`); R.headers = keep; render(); } }
   if (el.id === "f-src") { L.fbSource = el.value; saveLocal(); }
   if (el.id === "allocFile" && el.files[0]) readHeaders(el.files[0]);
+  if ((el.id === "kbFiles" || el.id === "kbFolder") && el.files.length) { const list = [...el.files].map(f => ({ file: f, path: f.webkitRelativePath || f.name })); el.value = ""; kbAddFiles(list); }
   if (el.id === "fbFile" && el.files[0]) readFb(el.files[0]);
   if (el.id === "imFile" && el.files[0]) fileToText(el.files[0]).then(t => { $("#imText").value = t; }).catch(err => toast(err.message));
 });
@@ -1957,7 +2216,7 @@ async function readFb(file) {
 }
 document.addEventListener("dragover", e => { const z = e.target.closest && e.target.closest(".dropzone"); if (z) { e.preventDefault(); z.classList.add("over"); } });
 document.addEventListener("dragleave", e => { const z = e.target.closest && e.target.closest(".dropzone"); if (z) z.classList.remove("over"); });
-document.addEventListener("drop", e => { const z = e.target.closest && e.target.closest(".dropzone"); if (!z) return; e.preventDefault(); z.classList.remove("over"); const f = e.dataTransfer.files[0]; if (!f) return; z.id === "allocDrop" ? readHeaders(f) : z.id === "txDrop" ? readTranscript(f) : readFb(f); });
+document.addEventListener("drop", e => { const z = e.target.closest && e.target.closest(".dropzone"); if (!z) return; e.preventDefault(); z.classList.remove("over"); if (z.id === "kbDrop") { filesFromDrop(e.dataTransfer).then(kbAddFiles); return; } const f = e.dataTransfer.files[0]; if (!f) return; z.id === "allocDrop" ? readHeaders(f) : z.id === "txDrop" ? readTranscript(f) : readFb(f); });
 async function readTranscript(file) {
   const msg = $("#txFileMsg"); if (msg) msg.textContent = "Reading " + file.name + "…";
   try {

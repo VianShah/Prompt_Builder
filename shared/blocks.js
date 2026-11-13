@@ -87,6 +87,7 @@ function baseCfg(){
     compliance:{rpcAttempts:3,spouse:false,recording:true,windowStart:"08:00",windowEnd:"19:00",nameUse:"full",aiDisclosure:true},
     persona:"compliant",
     mapping:Object.fromEntries(SCHEMA.map(s=>[s.k,""])),
+    mapSrc:{}, mapOff:[], extraVars:[], overrides:{}, addons:{},
     kb:{facts:[],faqs:[],oos:"I don't have that information right now. I'll note your question so the team can help you."},
     order:[...CANON], off:[]
   };
@@ -166,7 +167,10 @@ const BLOCKS = [
   // INPUTS
   {id:"VAR-SCHEMA", sec:"inputs", layer:"L9", src:"Canonical schema", t:"Runtime variables", edit:"mapping", when:()=>true,
    text:c=>{const p=pol(c);const sp={total_overdue:p.spokenOverdue,outstanding_amount:p.spokenOutstanding,n_loans:p.spokenLoans};
-    return SCHEMA.filter(s=>c.mapping[s.k]).map(s=>{let say=s.spoken; if(s.k in sp) say=sp[s.k]?"may be spoken":"internal only"; return `- ${V(s.k)}: ${s.d} (${say})`}).join("\n") || "- No variables mapped yet."}},
+    const std=SCHEMA.filter(s=>c.mapping[s.k]).map(s=>{let say=s.spoken; if(s.k in sp) say=sp[s.k]?"may be spoken":"internal only"; return `- ${V(s.k)}: ${s.d} (${say})`});
+    // Extra client fields added on the Data mapping step (beyond the standard names).
+    const ex=(c.extraVars||[]).filter(x=>x&&x.k).map(x=>`- ${V(x.k)}: ${x.d||"client field"} (${x.spoken?"may be spoken":"internal only"})`);
+    return [...std,...ex].join("\n") || "- No variables mapped yet."}},
   // IDENTITY
   {id:"PLT-SCREEN", sec:"identity", layer:"L0", src:"SnapMint v2 → promoted", t:"Machine / call-screening detection", edit:"locked", when:()=>true,
    text:()=>`If you hear a call-screening assistant, a network announcement or an advert, end the call at once without disclosing anything. Disposition: not_reachable.`},

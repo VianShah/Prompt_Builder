@@ -160,6 +160,43 @@ ${markdown.slice(0, 120000)}`;
   return { issues: (Array.isArray(r.data) ? r.data : []).filter(x => x && x.issue), provider: r.provider };
 }
 
+// Review a prompt built in the wizard AND propose a fix for each issue, so it can be applied in place:
+//   edit    : new wording for one block (only blocks that aren't locked)
+//   add     : a new rule appended to a section (also how a locked block is strengthened)
+//   setting : the real cause is a choice on an earlier wizard step; say which step and what to change
+async function reviewWithFixes({ blocks, steps }) {
+  const list = (Array.isArray(blocks) ? blocks : []).filter(x => x && x.id && x.text != null).slice(0, 200);
+  const stepNames = (Array.isArray(steps) ? steps : []).map(String).slice(0, 12);
+  const secs = [...new Set(list.map(x => x.sec))];
+  const req = `Review this collections voice-agent prompt (Indian lending, phone calls in several languages) and FIX what you find. Look for: contradictions between blocks; persona lines that could override compliance or client policy; common collection-call situations with no handling; compliance risks (threats, disclosure to third parties, promises of outcomes, invented facts). Ignore style and wording preferences.
+
+The prompt is made of blocks. For each issue give exactly one fix:
+- "edit": rewrite ONE block that is not locked. "block" = its id, "new_text" = the whole new text of that block. Change only what the issue needs; keep every other rule, {variable} and number in the block exactly.
+- "add": add a short new rule to a section ("section" = section id, "text" = the rule, one or two sentences). Use this when nothing covers the situation, or when the block at fault is locked.
+- "setting": when the real cause is a choice made on one of these setup steps: ${stepNames.join(', ')}. "step" = the step name exactly, "change" = what to set it to, in one sentence.
+Locked blocks are shared compliance and platform rules: never edit them.
+
+Reply with only a JSON array of up to 8 objects:
+{"section": "section id", "severity": "high"|"medium"|"low", "issue": "one sentence", "suggestion": "one sentence on the fix", "fix": {"type": "edit"|"add"|"setting", "block": "", "new_text": "", "text": "", "step": "", "change": ""}}
+Return [] if there are no real issues.
+
+SECTION IDS: ${secs.join(', ')}
+
+BLOCKS (in prompt order):
+${list.map(x => `[${x.id}] section=${x.sec}${x.locked ? ' LOCKED' : ''}\n${String(x.text).slice(0, 4000)}`).join('\n\n').slice(0, 150000)}`;
+  const r = await llm.json(req, { maxTokens: 12000, timeoutMs: 240000 });
+  const byId = new Map(list.map(x => [x.id, x]));
+  const issues = (Array.isArray(r.data) ? r.data : []).filter(x => x && x.issue).slice(0, 8).map(x => {
+    const f = x.fix || {}, out = { section: String(x.section || ''), severity: ['high', 'medium', 'low'].includes(x.severity) ? x.severity : 'medium', issue: String(x.issue), suggestion: String(x.suggestion || '') };
+    const b = byId.get(String(f.block || ''));
+    if (f.type === 'edit' && b && !b.locked && String(f.new_text || '').trim() && f.new_text !== b.text) out.fix = { type: 'edit', block: b.id, sec: b.sec, before: b.text, text: String(f.new_text).trim() };
+    else if ((f.type === 'add' || (f.type === 'edit' && b && b.locked)) && String(f.text || f.new_text || '').trim()) out.fix = { type: 'add', sec: secs.includes(f.section) ? f.section : (b ? b.sec : secs.includes(x.section) ? x.section : 'rules'), text: String(f.text || f.new_text).trim() };
+    else if (f.type === 'setting' && stepNames.includes(String(f.step))) out.fix = { type: 'setting', step: String(f.step), change: String(f.change || x.suggestion || '') };
+    return out;
+  });
+  return { issues, provider: r.provider };
+}
+
 async function kbDraft({ notes, client, product }) {
   const text = `Turn these product notes into a knowledge base for a collections voice agent for ${client || 'a lender'} (${product || 'loan'}).
 Rules: only use facts stated in the notes. Write FAQs the way a borrower would ask on a phone call. Answers are one or two sentences, say what the agent says or does, and never promise an outcome (no "will be waived/approved/updated"). Never write specific rupee amounts; refer to them as the amount on the account.
@@ -171,6 +208,42 @@ ${String(notes).slice(0, 20000)}`;
   const d = r.data || {};
   return { facts: (d.facts || []).filter(x => x && x.k && x.v).map(x => ({ k: String(x.k), v: String(x.v) })),
     faqs: (d.faqs || []).filter(x => x && x.q && x.a).map(x => ({ q: String(x.q), a: String(x.a) })), oos: d.oos ? String(d.oos) : '', provider: r.provider };
+}
+
+// Knowledge base from documents (product sheets, policy PDFs, FAQ files...). The browser extracts the
+// text and sends it in batches; each batch comes back as facts and FAQs that name the file they came
+// from, for a person to review before anything is added. Only what the documents say is used.
+const KB_KINDS = ['product', 'policy', 'process', 'contact', 'other'];
+async function kbFromDocs({ docs, client, product, agentType }) {
+  const list = (Array.isArray(docs) ? docs : []).filter(d => d && String(d.text || '').trim()).slice(0, 20);
+  const body = list.map(d => `=== FILE: ${String(d.name || 'document').slice(0, 160)} ===\n${String(d.text).slice(0, 40000)}`).join('\n\n');
+  const req = `You build the knowledge base for a phone voice agent (${agentType || 'collections'}) for ${client || 'a lender'}${product ? `, product: ${product}` : ''}. The agent may state ONLY facts in this knowledge base, so it must be exact.
+
+Read the documents below and extract:
+- facts: short, self-contained statements the agent may say. "k" is a 2–5 word topic, "v" is the fact in one or two plain sentences. "kind" is one of ${KB_KINDS.join(', ')}: product (features, fees, limits, eligibility), policy (rules the lender has set: waivers, settlements, charges, what may or may not be offered), process (how to pay, how to raise a request, timelines), contact (channels, numbers, hours).
+- faqs: questions a customer would really ask on a call, in their words, with the agent's answer in one or two sentences.
+- oos: one line the agent says when a question isn't covered (only if the documents suggest one; else empty).
+
+Rules:
+- Use only what the documents state. Never add, infer or generalise. If documents disagree, keep both facts and say so in "v".
+- Keep fees, limits, dates and percentages exactly as written. Never write amounts that belong to one customer's account.
+- Answers say what the agent says or does. Never promise an outcome the documents don't guarantee (no "will be waived/approved").
+- "src" is the FILE name each item came from, exactly as given.
+- Skip boilerplate, headers, legal footers, and anything about internal staff only.
+- English, even if the documents mix languages.
+
+Reply with only JSON: {"facts":[{"k":"","v":"","kind":"","src":""}],"faqs":[{"q":"","a":"","src":""}],"oos":""}
+
+DOCUMENTS:
+${body}`;
+  const r = await llm.json(req, { maxTokens: 12000, timeoutMs: 240000 });
+  const d = r.data || {}, names = list.map(x => String(x.name || ''));
+  const srcOf = v => { const t = String(v || ''); return names.find(n => n === t) || names.find(n => t && (n.includes(t) || t.includes(n))) || (names.length === 1 ? names[0] : t); };
+  return {
+    facts: (d.facts || []).filter(x => x && x.k && x.v).map(x => ({ k: String(x.k).slice(0, 120), v: String(x.v).slice(0, 800), kind: KB_KINDS.includes(x.kind) ? x.kind : 'other', src: srcOf(x.src) })).slice(0, 120),
+    faqs: (d.faqs || []).filter(x => x && x.q && x.a).map(x => ({ q: String(x.q).slice(0, 300), a: String(x.a).slice(0, 800), src: srcOf(x.src) })).slice(0, 120),
+    oos: d.oos ? String(d.oos).slice(0, 300) : '', provider: r.provider,
+  };
 }
 
 // Import an existing Sarvam prompt without rewording it: split into chunks, let the LLM (or keyword rules) assign each
@@ -644,4 +717,4 @@ At most 10 differences, most important first.`;
     differences: (Array.isArray(d.differences) ? d.differences : []).filter(x => x && x.area).slice(0, 10).map(x => ({ area: String(x.area), a: String(x.a || ''), b: String(x.b || ''), risk: ['high', 'medium', 'low'].includes(x.risk) ? x.risk : 'low' })) };
 }
 
-module.exports = { SKELETON, factoryMap, factoryAssemble, factoryReview, factoryRevise, diagnoseGroup, buildTests, runTest, optimizePrompt, applyEdits, analyzeTranscript, critiqueFix, mapFeedback, draftFix, review, kbDraft, importPrompt, diagnoseCall, compareSummary };
+module.exports = { reviewWithFixes, kbFromDocs, SKELETON, factoryMap, factoryAssemble, factoryReview, factoryRevise, diagnoseGroup, buildTests, runTest, optimizePrompt, applyEdits, analyzeTranscript, critiqueFix, mapFeedback, draftFix, review, kbDraft, importPrompt, diagnoseCall, compareSummary };
