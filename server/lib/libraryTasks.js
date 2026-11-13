@@ -141,14 +141,15 @@ Reply with only JSON: {"text": "the tailored rule", "changes": "one sentence on 
 }
 
 // ---------- a library from documents (agent types with no live agents yet, e.g. sales) ----------
-async function libraryFromDocs({ agentType, docs, skeleton }) {
+// mode 'draft' (New prompt): rule text stays clean; what only the engineer can answer comes back as questions per rule.
+async function libraryFromDocs({ agentType, docs, skeleton, mode }) {
   const list = (docs || []).filter(d => d && String(d.text || '').trim()).slice(0, 20);
   const body = list.map(d => `=== FILE: ${clip(d.name, 160)} ===\n${clip(d.text, 40000)}`).join('\n\n').slice(0, 180000);
   const req = `Design the prompt structure and the rules for a ${TYPES[agentType] || agentType} phone voice agent (India), using ONLY the client documents below (scripts, product sheets, policies, compliance notes).
 ${skeleton ? `Use this existing structure:\n${skeleton.sections.map(secLine).join('\n')}` : `First propose the structure of the Instructions: the sections in order (e.g. Introduction, Environment, Objective, Compliance and disclosures, Eligibility, Pitch, Objection handling, Consent, Closing). "mandatory" true for sections every agent of this type needs. Mark the product-facts section with "kb": true.`}
-Then write the rules for each section: short, self-contained instructions the agent follows on a call. Use [[snake_case]] placeholders for client-specific values and {{snake_case}} for values that come with each call (customer name, offer amount). Never invent facts, fees, offers or compliance wording that the documents don't state; where something is needed but missing, write [CONFIRM: what is missing].
+Then write the rules for each section: short, self-contained instructions the agent follows on a call. Use [[snake_case]] placeholders for client-specific values and {{snake_case}} for values that come with each call (customer name, offer amount). ${mode === 'draft' ? `Never invent facts, fees, offers or compliance wording that the documents don't state. Where a detail is needed but missing, write the rule so it reads well without it (no blanks, no brackets, no placeholders for it) and put one short question for the engineer in that rule's "asks" list (e.g. "What is the minimum monthly income?").` : `Never invent facts, fees, offers or compliance wording that the documents don't state; where something is needed but missing, write [CONFIRM: what is missing].`}
 
-Reply with only JSON: {${skeleton ? '' : '"greeting": {"desc": ""}, "sections": [{"id": "", "title": "", "mandatory": true, "desc": "", "aliases": [], "kb": false}], '}"rules": [{"section": "section id", "title": "", "text": "", "src": "file name"}], "greeting": {"text": "a suggested greeting, or empty"}}
+Reply with only JSON: {${skeleton ? '' : '"greeting": {"desc": ""}, "sections": [{"id": "", "title": "", "mandatory": true, "desc": "", "aliases": [], "kb": false}], '}"rules": [{"section": "section id", "title": "", "text": "", "src": "file name"${mode === 'draft' ? ', "asks": ["question for the engineer"]' : ''}}], "greeting": {"text": "a suggested greeting, or empty"}}
 
 DOCUMENTS:
 ${body}`;
@@ -156,7 +157,7 @@ ${body}`;
   const d = r.data || {};
   const sk = skeleton || { ...normSkeleton(d, agentType), derivedFrom: list.map(x => x.name) };
   const ids = new Set(sk.sections.map(s => s.id));
-  const rules = (d.rules || []).filter(x => x && String(x.text || '').trim()).map(x => ({ section: ids.has(slug(x.section)) ? slug(x.section) : ids.has(x.section) ? x.section : sk.sections[0].id, title: clip(x.title || 'Rule', 80), text: String(x.text).trim(), src: clip(x.src, 160) })).slice(0, 150);
+  const rules = (d.rules || []).filter(x => x && String(x.text || '').trim()).map(x => ({ section: ids.has(slug(x.section)) ? slug(x.section) : ids.has(x.section) ? x.section : sk.sections[0].id, title: clip(x.title || 'Rule', 80), text: String(x.text).trim(), src: clip(x.src, 160), asks: (Array.isArray(x.asks) ? x.asks : []).map(q => clip(q, 300)).filter(Boolean).slice(0, 5) })).slice(0, 150);
   return { skeleton: sk, rules, greeting: clip(d.greeting && d.greeting.text, 600), provider: r.provider };
 }
 

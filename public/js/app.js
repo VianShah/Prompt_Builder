@@ -202,7 +202,8 @@ async function loadCur(id) {
   R.cur = p; R.feedback = f.items; R.tests = ts.items; R.agentId = p.agent ? p.agent.id : null;
   // Agent prompts: the text exactly as in Sarvam (original order, untouched wording), plus greeting and variables.
   R.sv = null;
-  if (p.agent && p.agent.sarvamAppId) { try { R.sv = await api("GET", `/versions/${latestOf(p).id}/sarvam-text`); } catch (e) { R.sv = null; } }
+  // Linked agents, and prompts built with New prompt (they carry their own Greeting + Instructions text).
+  if ((p.agent && p.agent.sarvamAppId) || latestOf(p).sarvamText) { try { R.sv = await api("GET", `/versions/${latestOf(p).id}/sarvam-text`); } catch (e) { R.sv = null; } }
 }
 const latestOf = cur => cur.versions[cur.versions.length - 1];
 const mdOf = (cfg, v, tags = true) => toMarkdown(header(cfg, v.v), v.order, v.sections, tags);
@@ -729,6 +730,8 @@ function promptTab(cur) {
        <a href="#" data-act="copy-prompt">Copy</a><a href="#" data-act="dl-prompt">Download</a>
      </div></details></div></div>
    ${R.opt && R.opt.promptId === p.id ? optPanel(cur) : ""}
+   ${(latest.openIssues || []).length || (latest.openQuestions || []).length ? `<details class="open-items" ${R.openItems === false ? "" : "open"} data-open-items><summary><b>Open from drafting</b> <span class="small muted">· ${[(latest.openQuestions || []).length ? `${latest.openQuestions.length} question${latest.openQuestions.length === 1 ? "" : "s"}` : "", (latest.openIssues || []).length ? `${latest.openIssues.length} issue${latest.openIssues.length === 1 ? "" : "s"}` : ""].filter(Boolean).join(" · ")}. Resolve them with Edit before this goes live.</span></summary>
+    <div class="stack" style="gap:6px;margin-top:10px">${(latest.openQuestions || []).map(q => `<div class="small"><b>${esc(q.ask)}</b> <span class="muted">· ${esc(q.section)}: “${esc(q.rule.slice(0, 120))}${q.rule.length > 120 ? "…" : ""}”</span></div>`).join("")}${(latest.openIssues || []).map(x => `<div class="small"><b>${esc(x.t)}</b> <span class="muted">· ${esc(x.d)}</span></div>`).join("")}</div></details>` : ""}
    <div><div class="doc">
     ${cur.agent || greeting ? `<div class="doc-label">Greeting${R.sv && R.sv.greetingChanged ? ` <span class="chip warn">changed in this version</span>` : ""}</div>
     <div class="greet">${greeting ? mdInline(greeting) : `<span class="muted">No greeting set</span>`}</div>
