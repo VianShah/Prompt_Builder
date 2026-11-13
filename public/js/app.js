@@ -211,7 +211,7 @@ const mdOf = (cfg, v, tags = true) => toMarkdown(header(cfg, v.v), v.order, v.se
 const ROUTES = {
   overview: { view: viewOverview, load: () => Promise.all([loadPrompts(true), loadAgents(true), api("GET", "/approvals").then(r => R.approvals = r.items), api("GET", "/core-changes").then(r => R.core = r.items)]) },
   agents: { view: viewAgents, load: async () => { await Promise.all([loadAgents(true), loadPrompts(true), api("GET", "/sarvam/status").then(r => R.sarvam = r).catch(() => R.sarvam = null)]); api("GET", "/agents/pull-all/status").then(j => { if (j && j.state === "running") { R.pullJob = j; pollPull(); } }).catch(() => { }); } },
-  create: { view: viewCreate, load: () => loadAgents() },
+  create: { view: () => "", load: null }, // New prompt: set in library.js
   improve: { view: viewImprove, load: async () => {
     await Promise.all([loadPrompts(true), loadAgents(true), api("GET", "/sarvam/status").then(r => R.sarvam = r).catch(() => R.sarvam = null)]);
     const ag = R.agentId && R.agents.find(a => a.id === R.agentId);
@@ -224,7 +224,6 @@ const ROUTES = {
     if (R.pendingEdit) { R.pendingEdit = false; const t = R.sv && R.sv.text ? R.sv.text : mdOf(R.cur.prompt.cfg, latestOf(R.cur), false); R.editText = { text: t, orig: t, greeting: greetingNow(), og: greetingNow() }; }
   } },
   approvals: { view: viewApprovals, load: async () => { R.approvals = (await api("GET", "/approvals")).items; await Promise.all([loadPrompts(true), loadAgents()]); R.sarvam = await api("GET", "/sarvam/status").catch(() => null); } },
-  knowledge: { view: viewKnowledge, load: null },
   compare: { view: viewCompare, load: async () => { await Promise.all([loadAgents(true), loadPrompts(true)]); R.cmpData = {}; cmpLoad(); } },
   library: { view: viewLibrary, load: () => api("GET", "/core-changes").then(r => R.core = r.items) },
   modules: { view: viewModules, load: async () => { await Promise.all([loadAgents(true), loadPrompts(true)]); const mr = await api("GET", "/modules"); R.mods = mr.items; R.lib = mr.library; if (R.modId) await loadMod(R.modId); } }
@@ -250,7 +249,7 @@ async function go() {
   render(); window.scrollTo(0, 0);
 }
 window.addEventListener("hashchange", go);
-function refreshInsights() { const el = $("#insights"); if (el) el.innerHTML = insights(L.cfg); }
+function refreshInsights() { /* the old wizard's live outline is gone */ }
 function commit(full = true) { saveLocal(); if (full) render(); else refreshInsights(); }
 
 // ---------- Small render helpers ----------
@@ -258,7 +257,7 @@ const seg = (path, opts, val) => `<div class="seg" role="group">${opts.map(([v, 
 const yn = (path, val) => seg(path, [[true, "Yes"], [false, "No"]], val);
 const trow = (title, hint, ctrl) => `<div class="toggle-row"><div class="t"><b>${title}</b><span>${hint}</span></div>${ctrl}</div>`;
 const field = (label, path, val, hint = "", type = "text") => `<label class="f">${label}${hint ? ` <span class="hint">${hint}</span>` : ""}<input type="${type}" id="f-${path.replace(/\./g, '-')}" data-bind="${path}" value="${esc(val)}"></label>`;
-const STEPS = ["Client setup", "Objective & bucket", "Client policy", "Compliance", "Persona", "Data mapping", "Knowledge base", "Assembly", "Validate", "Save"];
+const STEPS = ["Client", "Source", "Review"]; // New prompt
 
 // ---------- OVERVIEW ----------
 function viewOverview() {
@@ -299,23 +298,25 @@ function healthRows() {
 
 // ---------- LIVE AGENTS ----------
 function viewAgents() {
-  const ag = R.agents || [];
-
+  const ag = R.agents || [], q = (R.agQ || "").trim().toLowerCase();
   const sOn = R.sarvam && R.sarvam.hasToken && !R.sarvam.expired;
+  // One list: every agent, then prompts saved in the builder that aren't linked to an agent yet.
+  const drafts = (R.prompts || []).filter(p => !p.agentId);
+  const hit = (...t) => !q || t.join(" ").toLowerCase().includes(q);
+  const rows = [...ag].filter(a => hit(a.name, a.client, a.sarvamName, a.agentType)).map(agentCard)
+    .concat(drafts.filter(p => hit(p.name, p.agentType)).map(p => `<a class="arow" href="#improve" data-act="open-prompt" data-id="${p.id}"><div class="nm"><b>${esc(p.name)}</b><div class="small muted">${p.agentType ? `${esc(p.agentType === "sales" ? "Sales" : "Collections")} · ` : ""}not linked to a Sarvam agent yet${p.latest ? ` · v${esc(p.latest.v)}` : ""}</div></div><div>${p.latest ? statusPill(p.latest.status) : ""}</div><div></div></a>`));
   return `
-  <div class="view-head"><div><h1>Agents</h1><p>${ag.length ? `${ag.length} agent${ag.length === 1 ? "" : "s"} in your Sarvam workspace. ` : ""}Open one to read its prompt, review calls and make changes.</p></div>
-  <div class="row" style="gap:8px"><button class="btn" data-act="sync" ${sOn ? "" : "disabled"} title="Reads every agent and its newest committed version from Sarvam, and talk time and calls from Kollect">↻ Refresh</button>
+  <div class="view-head"><div><h1>Agents</h1><p>${ag.length} agent${ag.length === 1 ? "" : "s"}${drafts.length ? ` · ${drafts.length} new prompt${drafts.length === 1 ? "" : "s"} not linked yet` : ""}</p></div>
+  <div class="row" style="gap:8px"><input type="search" id="ag-q" data-ag-q placeholder="Search agents" value="${esc(R.agQ || "")}" style="width:240px">
    <details class="more"><summary class="btn" aria-label="More actions">⋯</summary><div class="more-pop">
-     <a href="#compare">Compare two agents</a>
-     ${canDo("edit") && sOn ? `<a href="#" data-act="pull-all" title="Reads every agent's prompt and versions from Sarvam, including agents the builder hasn't opened yet">Load all prompts from Sarvam</a>` : ""}
-     <a href="#create">Write a prompt with the wizard</a></div></details>
-   ${canDo("approve") && R.sarvam && R.sarvam.hasToken ? `<button class="btn primary" data-act="clone-modal">+ New agent</button>` : `<a class="btn primary" href="#create">+ New prompt</a>`}</div></div>
+     <a href="#" data-act="sync" title="Reads every agent and its newest committed version from Sarvam">Refresh from Sarvam</a>
+     ${canDo("edit") && sOn ? `<a href="#" data-act="pull-all" title="Reads every agent's prompt and versions from Sarvam">Load all prompts</a>` : ""}
+     <a href="#compare">Compare two agents</a></div></details>
+   <a class="btn primary" href="#create">+ New agent</a></div></div>
   ${sarvamPanel()}
   ${pullBar()}
   ${R.syncNote ? `<div class="notice"><span>${R.syncNote}</span><a href="#" class="small" data-act="sync-note-x">dismiss</a></div>` : ""}
-
-  ${ag.length ? `<div class="alist">${[...ag].map(agentCard).join("")}</div>` : `<div class="empty">No agents yet. ${sOn ? "Click Refresh." : "Connect Sarvam first."}</div>`}
-  ${(() => { const other = (R.prompts || []).filter(p => !p.agentId); return other.length ? `<h2 class="group">Prompts not linked to an agent</h2><div class="alist">${other.map(p => `<a class="arow" href="#improve" data-act="open-prompt" data-id="${p.id}"><div class="nm"><b>${esc(p.name)}</b><div class="small muted">${p.latest ? "v" + esc(p.latest.v) : ""}</div></div><div>${p.latest ? statusPill(p.latest.status) : ""}</div><div></div></a>`).join("")}</div>` : ""; })()}`;
+  ${rows.length ? `<div class="alist">${rows.join("")}</div>` : `<div class="empty">${q ? `Nothing matches “${esc(R.agQ)}”.` : sOn ? "No agents yet. Choose ⋯ → Refresh from Sarvam." : "No agents yet. Connect Sarvam first."}</div>`}`;
 }
 // "Load all prompts": progress while it runs in the background, and what happened when it's done.
 function pullBar() {
@@ -377,7 +378,7 @@ function agentCard(a) {
   const newer = lv && a.sarvamNewest && a.sarvamNewest > lv ? `<span class="chip warn" title="Sarvam has a newer committed version than the one shown here. Open the agent and use ⋯ → Reload prompt from Sarvam.">Sarvam has v${esc(a.sarvamNewest)}</span>` : "";
   const notK = "";
   return `<a class="arow" href="#improve" data-act="open-agent" data-id="${esc(a.id)}">
-   <div class="nm" style="min-width:0"><b>${esc(a.name)}</b><div class="small muted">${esc(a.client || a.sarvamName || "")}${p && p.live && p.live.sarvamVersion ? ` · Sarvam v${esc(p.live.sarvamVersion)}` : a.sarvamNewest ? ` · Sarvam v${esc(a.sarvamNewest)} (prompt not loaded yet)` : ""}</div>${flag || uatOf || newer || notK ? `<div class="row" style="margin-top:6px;gap:4px">${flag}${newer}${notK}${uatOf ? `<span class="chip">UAT for ${esc(uatOf.name)}</span>` : ""}</div>` : ""}</div>
+   <div class="nm" style="min-width:0"><b>${esc(a.name)}</b><div class="small muted">${a.agentType === "sales" ? "Sales · " : ""}${esc(a.client || a.sarvamName || "")}${p && p.live && p.live.sarvamVersion ? ` · Sarvam v${esc(p.live.sarvamVersion)}` : a.sarvamNewest ? ` · Sarvam v${esc(a.sarvamNewest)} (prompt not loaded yet)` : ""}</div>${flag || uatOf || newer || notK ? `<div class="row" style="margin-top:6px;gap:4px">${flag}${newer}${notK}${uatOf ? `<span class="chip">UAT for ${esc(uatOf.name)}</span>` : ""}</div>` : ""}</div>
 
 
   </a>`;
@@ -416,216 +417,10 @@ function importModal(a) {
 }
 const closeModal = () => { $("#modal").hidden = true; $("#modal").innerHTML = ""; };
 
-// ---------- CREATE ----------
-function stepStatus(i, vals) { if (vals.some(v => v.lvl === "err" && v.step === i)) return "bad"; return i < L.step ? "done" : ""; }
-function viewCreate() {
-  const c = L.cfg;
-  if (autoMap(c)) saveLocal(); // variables the prompt uses are mapped before anything is checked
-  const vals = validate(c);
-  const errs = vals.filter(v => v.lvl === "err").length;
-  const rail = STEPS.map((s, i) => { const st = stepStatus(i, vals); return `<button type="button" class="${st}" data-act="step" data-i="${i}" ${i === L.step ? 'aria-current="step"' : ""}>${st === "bad" ? `<span class="mk bad" title="Needs attention"></span>` : st === "done" ? `<span class="mk done">✓</span>` : `<span class="mk"></span>`}<span>${s}</span></button>`; }).join("");
-  const body = [stepClient, stepObjective, stepPolicy, stepCompliance, stepPersona, stepMapping, stepKB, stepAssembly, stepValidate, stepGenerate][L.step](c, vals);
-  return `
-  <div class="view-head"><div><h1>New prompt</h1><p>Step ${L.step + 1} of ${STEPS.length}${errs ? ` · <span style="color:var(--err)">${errs} to fix</span>` : ""} · saved in this browser as you go</p></div>
-  <div class="row" style="gap:8px"><button class="btn ${L.preview ? "pill" : ""}" data-act="preview" aria-pressed="${!!L.preview}">Preview</button><button class="btn ghost" data-act="reset">Start over</button></div></div>
-  <div class="create">
-    <nav class="rail" aria-label="Steps">${rail}</nav>
-    <section class="form">${body}
-      <div class="step-foot">${L.step > 0 ? `<button class="btn ghost" data-act="step" data-i="${L.step - 1}">← Back</button>` : "<span></span>"}${L.step < STEPS.length - 1 ? `<button class="btn primary" data-act="step" data-i="${L.step + 1}">Next: ${STEPS[L.step + 1]} →</button>` : ""}</div>
-    </section>
-  </div>
-  ${L.preview ? `<aside class="drawer" aria-label="Preview"><div class="row" style="justify-content:space-between;margin-bottom:12px"><h2>Preview</h2><button class="btn sm ghost" data-act="preview" aria-label="Close">✕</button></div><div id="insights">${insights(c)}</div></aside>` : ""}`;
-}
-function insights(c) {
-  const asm = assemble(c);
-  const per = asm.map(s => ({ sec: s.sec, n: s.blocks.filter(x => x.on).length, w: words(s.blocks.filter(x => x.on).map(x => x.text).join(" ")) }));
-  const max = Math.max(...per.map(p => p.w), 1), total = per.reduce((a, p) => a + p.w, 0);
-  const used = asm.flatMap(s => s.blocks.filter(x => x.on).map(x => x.b));
-  const byLayer = {}; used.forEach(b => byLayer[b.layer] = (byLayer[b.layer] || 0) + 1);
-  const bySrc = {}; used.forEach(b => bySrc[b.src] = (bySrc[b.src] || 0) + 1);
-  const p = personaById(c.persona);
-  return `<div class="stack">
-    <div><h3>Outline</h3><p class="small muted">${used.length} blocks · about ${total.toLocaleString()} words</p></div>
-    <div>${per.map((x, i) => `<div class="outline-item"><span style="min-width:0">${i + 1}. ${secTitle(x.sec)} <span class="muted small">(${x.n})</span></span><span class="bar" title="${x.w} words"><i style="width:${Math.round(x.w / max * 100)}%"></i></span></div>`).join("")}</div>
-    <hr class="sep"><h3>What the settings changed</h3>
-    <div class="stack" style="gap:6px">${movingParts(c).map(m => `<div class="impact"><b>${esc(m.label)}</b> → ${esc(m.b.t)} <span class="muted">(${m.id}, from ${esc(m.b.src)})</span></div>`).join("")}
-      <div class="impact"><b>Persona</b> → ${p.t}, pressure ${p.heat}/5, ${p.heat <= 2 ? 2 : 3} persuasion cycles</div>
-      <div class="impact"><b>Bucket</b> → opener status line for ${bucketT(c.bucket)}</div></div>
-    <hr class="sep"><h3>Blocks by layer</h3>
-    <div class="row" style="gap:6px">${LAYERS.filter(l => byLayer[l.id]).map(l => `<span class="chip lchip" style="background:${LAYER_COLOR(l.id)}" title="${l.name}">${l.id} · ${byLayer[l.id]}</span>`).join("")}</div>
-    <h3>Blocks by source</h3>
-    <div class="row" style="gap:6px">${Object.entries(bySrc).sort((a, b) => b[1] - a[1]).map(([s, n]) => `<span class="chip src">${esc(s)} · ${n}</span>`).join("")}</div>
-  </div>`;
-}
-function stepClient(c) {
-  const cl = c.client;
-  return `<div class="stack">
-  <div><h2>Client setup</h2><p class="muted">Who the agent works for and what it's about.</p></div>
-  <div class="row" style="gap:10px"><span class="small muted">Start from</span><div class="seg" role="group">${Object.entries(PRESETS).map(([k, p]) => `<button type="button" data-act="preset" data-k="${k}" aria-pressed="${c.preset === k}" title="A proven production prompt: loads policy, compliance, persona, mapping and knowledge base">${esc(p.label)}</button>`).join("")}<button type="button" data-act="preset" data-k="blank" aria-pressed="${c.preset === "blank"}" title="Shared core only; you set everything">Blank</button></div></div>
-  <div class="fgrid">${field("Client name", "client.name", cl.name, "(short)")}${field("Legal name", "client.legal", cl.legal)}</div>
-  ${trow("Agent calls as", "Changes the greeting and the disclosure line.", seg("client.callingAs", [["lender", "The lender"], ["agency", "Agency on lender's behalf"]], cl.callingAs))}
-  ${cl.callingAs === "agency" ? `<div class="fgrid">${field("Agency name", "client.agency", cl.agency)}</div>` : ""}
-  <div class="fgrid"><label class="f">Product<select data-bind="client.product" id="f-product">${PRODUCTS.map(p => `<option ${p === cl.product ? "selected" : ""}>${p}</option>`).join("")}</select></label>${field("Agent name", "client.agentName", cl.agentName)}</div>
-  <label class="f">What the product is <span class="hint">(one or two lines, goes into the knowledge base)</span><textarea id="f-pdesc" data-bind="client.productDesc" rows="2">${esc(cl.productDesc)}</textarea></label>
-  ${trow("Agent voice gender", "Sets gendered verb forms (bol rahi / bol raha).", seg("client.agentGender", [["female", "Female"], ["male", "Male"]], cl.agentGender))}
-  <div><div class="lbl">Languages</div><div class="row" style="gap:6px">${LANGS.map(l => `<button type="button" class="btn sm" data-act="lang" data-l="${l}" aria-pressed="${cl.languages.includes(l)}">${l}</button>`).join("")}</div></div>
-  </div>`;
-}
-function stepObjective(c) {
-  return `<div class="stack">
-  <div><h2>Objective and DPD bucket</h2><p class="muted">The bucket sets the opener status line, the first urgency line and the suggested personas.</p></div>
-  <div class="choice"><button type="button" class="opt" aria-pressed="true"><b>Collections</b><span>Recover overdue EMIs</span></button>
-    <button type="button" class="opt" disabled><b>Sales</b><span>Phase 2: no proven sales prompts to reuse yet</span></button></div>
-  <div class="eyebrow">Bucket</div>
-  <div class="choice">${BUCKETS.map(b => `<button type="button" class="opt" data-act="seg" data-path="bucket" data-val='"${b.id}"' aria-pressed="${c.bucket === b.id}"><b>${b.t}</b><span>${b.d}</span><span>Suggests: ${b.rec.map(r => personaById(r).t).join(", ")}</span></button>`).join("")}</div>
-  </div>`;
-}
-function stepPolicy(c) {
-  const p = c.policy;
-  return `<div class="stack">
-  <div><h2>Client policy</h2><p class="muted">What the agent is allowed to do. Set by the client, not by tone. Policy always beats persona.</p></div>
-  <div>
-  ${trow("Agent may propose a partial payment", "SnapMint: yes (amount ladder). SMFG: no, accept only if offered.", yn("policy.proposePartial", p.proposePartial))}
-  ${p.proposePartial ? `<div class="fgrid" style="padding:8px 0 12px">${field("Lowest partial (₹)", "policy.partialFloor", p.partialFloor, "", "number")}${field("Ask full only if overdue ≤ (₹)", "policy.fullOnlyUnder", p.fullOnlyUnder, "", "number")}</div>` : ""}
-  ${trow("Agent may ask \"how much can you pay?\"", "Banned for SMFG.", yn("policy.askHowMuch", p.askHowMuch))}
-  ${trow("Date model", "Rolling day windows, or a month-end gate.", seg("policy.dateModel", [["rolling", "Rolling days"], ["monthend", "Month-end"]], p.dateModel))}
-  ${trow("Waiver / discount", "SnapMint allows a waiver request at 90+ DPD.", seg("policy.waiver", [["none", "Never"], ["request90", "Request at 90+"]], p.waiver))}
-  ${trow("Broken-promise mode", "Strict: call it out, no new date without money today.", seg("policy.brokenPromise", [["neutral", "Neutral"], ["strict", "Strict"]], p.brokenPromise))}
-  ${trow("Escalation line", "\"The account moves to the next stage of recovery.\"", yn("policy.escalation", p.escalation))}
-  ${trow("Upside framing", "\"Paying now may help stop further charges.\"", yn("policy.upside", p.upside))}
-  ${trow("Human transfer", "Off: wants-a-human closes with manager_escalation.", yn("policy.transfer", p.transfer))}
-  ${trow("Field visit", "Only to help with online payment, never for cash.", yn("policy.fieldVisit", p.fieldVisit))}
-  ${trow("Max payment-link asks per call", "Counted across the whole call.", `<input type="number" id="f-maxlink" min="1" max="5" style="width:80px" data-bind="policy.maxLinkAsks" value="${p.maxLinkAsks}">`)}
-  </div>
-  <div><div class="eyebrow" style="margin-bottom:6px">Amounts the agent may say aloud</div><div class="row">
-    <label class="check"><input type="checkbox" checked disabled> EMI amount</label>
-    <label class="check"><input type="checkbox" id="f-so" data-bind="policy.spokenOverdue" ${p.spokenOverdue ? "checked" : ""}> Total overdue</label>
-    <label class="check"><input type="checkbox" id="f-sout" data-bind="policy.spokenOutstanding" ${p.spokenOutstanding ? "checked" : ""}> Outstanding</label>
-    <label class="check"><input type="checkbox" id="f-sl" data-bind="policy.spokenLoans" ${p.spokenLoans ? "checked" : ""}> Number of loans</label></div></div>
-  <label class="f">Payment channels <span class="hint">(comma-separated; the agent never names any other)</span><input type="text" id="f-channels" data-act-input="channels" value="${esc(p.channels.join(", "))}"></label>
-  </div>`;
-}
-function stepCompliance(c) {
-  const k = c.compliance;
-  return `<div class="stack">
-  <div><h2>Compliance settings</h2><p class="muted">The compliance core is locked. These are its parameters, set before the flow because they shape identity and opening.</p></div>
-  <div>
-  ${trow("RPC: real dodges before ending", "After this many, end with rpc_failed.", `<input type="number" id="f-rpc" min="1" max="5" style="width:80px" data-bind="compliance.rpcAttempts" value="${k.rpcAttempts}">`)}
-  ${trow("Spouse may give permission", "SMFG: yes. SnapMint: no.", yn("compliance.spouse", k.spouse))}
-  ${trow("Recording disclosure", "Said once after identity is confirmed.", yn("compliance.recording", k.recording))}
-  ${trow("Name usage", "How the borrower is addressed.", seg("compliance.nameUse", [["full", "Full name, max 3×"], ["first_ji", "First name + ji"]], k.nameUse))}
-  ${trow("Disclose AI when asked", "Recommended: always yes.", yn("compliance.aiDisclosure", k.aiDisclosure))}
-  </div>
-  <div class="fgrid">${field("Calling window starts", "compliance.windowStart", k.windowStart, "", "time")}${field("Calling window ends", "compliance.windowEnd", k.windowEnd, "", "time")}</div>
-  <details class="panel" style="background:var(--sunk);border:0"><summary><b>Locked rules every prompt gets</b> <span class="muted small">(click to view)</span></summary><pre class="prompt" style="margin-top:10px;background:var(--surface)">${esc(blockById("CORE-NN-01").text(c))}\n\n${esc(blockById("ID-GATE").text(c))}</pre></details>
-  </div>`;
-}
-function stepPersona(c) {
-  const rec = BUCKETS.find(b => b.id === c.bucket).rec;
-  return `<div class="stack">
-  <div><h2>Persona</h2><p class="muted">How the agent sounds. Options that clash with client policy are locked, with the reason shown.</p></div>
-  <div class="choice">${PERSONAS.map(p => { const bl = personaBlock(p, c); return `<button type="button" class="opt" data-act="seg" data-path="persona" data-val='"${p.id}"' aria-pressed="${c.persona === p.id}" ${bl ? "disabled" : ""}>
-    <div class="row" style="justify-content:space-between;gap:6px"><b>${p.t}</b>${rec.includes(p.id) ? '<span class="chip acc">Suggested</span>' : ""}</div>
-    <div class="meter" title="Pressure ${p.heat}/5">${[1, 2, 3, 4, 5].map(i => `<i class="${i <= p.heat ? "f" : ""}"></i>`).join("")}</div>
-    <span>${p.d}</span>${bl ? `<span style="color:var(--err)">Locked: ${esc(bl)}</span>` : ""}</button>`; }).join("")}</div>
-  <div class="panel" style="background:var(--sunk);border:0"><div class="eyebrow">Persona block preview</div><pre class="prompt" style="background:transparent;padding:8px 0 0">${esc(blockById("PER").text(c))}</pre></div>
-  </div>`;
-}
-const ALIASES = { customer_name: ["name", "borrower_name", "cust_name", "user_name"], emi_amount: ["emi", "emi_amt"], emi_due_date: ["due_date", "emi_date"], total_overdue: ["overdue_amount", "overdue", "total_due", "overdue_amt"], outstanding_amount: ["pos", "principal_outstanding", "outstanding"], dpd: ["true_dpd", "days_past_due"], n_loans: ["loan_count", "no_of_loans", "num_loans"], attempt_count: ["attempt_number", "attempt_no_month", "attempt", "attempt_no"], link_live: ["link_active", "payment_link_live", "link_status"], loan_details: ["merchant", "loan_info", "loan_detail"], today_date: ["call_date", "date"], month_end_date: ["month_end", "monthend_date"], prior_context: ["notes", "last_disposition", "history", "prior_notes"] };
-// ---------- Data mapping ----------
-function addExtra(name, from) {
-  const k = snake(name), c = L.cfg; c.extraVars = c.extraVars || [];
-  if (!k) return;
-  if (isStd(k) || stdOf(k)) { const std = stdOf(k) || k; return ACT["map-add"]({ dataset: { k: std } }); }
-  if (c.extraVars.some(x => x.k === k)) return toast(`{${k}} is already added.`);
-  c.extraVars.push({ k, d: "", spoken: false, from: from || "" }); commit();
-}
 // Every variable the prompt's blocks actually use is mapped automatically. The column name comes
 // from, in order: the allocation file (if dropped), the name the existing agents already use for it,
 // or the standard name. The user can drop a variable, add one, or add their own client fields.
-const snake = s => String(s || "").toLowerCase().trim().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
-const isStd = k => SCHEMA.some(s => s.k === k);
 // Standard variable a column/variable name stands for (exact or a known alias), or null.
-const stdOf = name => { const n = snake(name); return SCHEMA.find(s => s.k === n || (ALIASES[s.k] || []).includes(n))?.k || null; };
-// Which sections use each variable, from the blocks that are switched on (the variable list itself excluded).
-function varUse(c) {
-  const out = {};
-  assemble(c).forEach(sec => sec.blocks.filter(x => x.on && x.b.id !== "VAR-SCHEMA").forEach(x => (String(x.text).match(/\{([a-z_]+)\}/g) || []).forEach(m => { const k = m.slice(1, -1); (out[k] = out[k] || new Set()).add(secTitle(sec.sec)); })));
-  return out;
-}
-// For each standard variable: the name most of the existing agents use for it, and which agents.
-function agentNames() {
-  const tally = {};
-  (R.agents || []).forEach(a => (a.variables || []).forEach(v => { const k = stdOf(v); if (!k) return; const t = (tally[k] = tally[k] || {}); (t[v] = t[v] || []).push(a.name); }));
-  return Object.fromEntries(Object.entries(tally).map(([k, t]) => { const [name, ags] = Object.entries(t).sort((x, y) => y[1].length - x[1].length)[0]; return [k, { name, agents: ags }]; }));
-}
-function autoMap(c) {
-  c.mapSrc = c.mapSrc || {}; c.mapOff = c.mapOff || []; c.extraVars = c.extraVars || [];
-  const use = varUse(c), heads = R.headers || [], seen = agentNames();
-  let n = 0;
-  SCHEMA.forEach(s => {
-    if (c.mapping[s.k] || c.mapOff.includes(s.k) || !(use[s.k] || s.req)) return;
-    const h = heads.find(x => stdOf(x) === s.k);
-    if (h) { c.mapping[s.k] = h; c.mapSrc[s.k] = "file"; }
-    else if (seen[s.k]) { c.mapping[s.k] = seen[s.k].name; c.mapSrc[s.k] = `agents:${seen[s.k].agents.length}`; }
-    else { c.mapping[s.k] = s.k; c.mapSrc[s.k] = "standard"; }
-    n++;
-  });
-  return n;
-}
-function srcChip(c, k) {
-  const s = (c.mapSrc || {})[k] || "";
-  if (s === "file") return `<span class="chip ok" title="Matched a column in the allocation file">from file</span>`;
-  if (s.startsWith("agents:")) { const n = +s.split(":")[1]; return `<span class="chip acc" title="The name your existing agents use">as in ${n} agent${n === 1 ? "" : "s"}</span>`; }
-  if (s.startsWith("agent:")) return `<span class="chip acc">from ${esc(s.slice(6))}</span>`;
-  if (s === "standard") return `<span class="chip" title="No file or agent had it, so the standard name is used">standard name</span>`;
-  if (s === "manual") return `<span class="chip">set by you</span>`;
-  return c.mapping[k] && c.preset && c.preset !== "blank" ? `<span class="chip">from template</span>` : "";
-}
-function stepMapping(c) {
-  autoMap(c); saveLocal();
-  const heads = R.headers || [], use = varUse(c), off = c.mapOff || [], extras = c.extraVars || [];
-  const inUse = SCHEMA.filter(s => c.mapping[s.k]);
-  const dropped = SCHEMA.filter(s => !c.mapping[s.k] && (use[s.k] || s.req));
-  const optional = SCHEMA.filter(s => !c.mapping[s.k] && !use[s.k] && !s.req);
-  // Columns in the file or other agents' variables that match no standard name: offered as extra fields.
-  const taken = new Set([...Object.values(c.mapping).filter(Boolean).map(snake), ...extras.map(x => x.k)]);
-  const pool = new Map();
-  heads.forEach(h => { if (!stdOf(h) && !taken.has(snake(h))) pool.set(snake(h), "allocation file"); });
-  (R.agents || []).forEach(a => (a.variables || []).forEach(v => { const k = snake(v); if (k && !stdOf(v) && !taken.has(k) && !pool.has(k)) pool.set(k, a.name); }));
-  const row = s => { const u = use[s.k]; const lock = s.req || u; return `<tr>
-    <td style="width:34px"><input type="checkbox" data-act-check="map-on" data-k="${s.k}" checked title="${lock ? "The prompt uses this. Dropping it shows an error until it's mapped again." : "Remove from the prompt"}"></td>
-    <td><code>{${s.k}}</code>${s.req ? ` <span class="chip">required</span>` : ""}<div class="small muted">${esc(s.d)}</div></td>
-    <td class="small muted">${u ? [...u].map(esc).join(", ") : s.req ? "Required by every agent" : "Listed in call inputs only"}</td>
-    <td style="min-width:180px"><input type="text" list="heads" id="map-${s.k}" data-act-input="map-col" data-k="${s.k}" value="${esc(c.mapping[s.k])}"><div style="margin-top:4px">${srcChip(c, s.k)}</div></td></tr>`; };
-  const exRow = (x, i) => `<tr>
-    <td style="width:34px"><input type="checkbox" data-act-check="extra-off" data-i="${i}" checked title="Remove"></td>
-    <td><code>{${esc(x.k)}}</code><div style="margin-top:4px"><span class="chip">client field</span></div></td>
-    <td class="small muted">${x.from ? `Found in ${esc(x.from)}` : "Added by you"}</td>
-    <td style="min-width:220px"><input type="text" data-act-input="extra-d" data-i="${i}" id="exd-${i}" value="${esc(x.d)}" placeholder="What it holds, e.g. home branch"><label class="check small" style="margin-top:6px"><input type="checkbox" data-act-check="extra-spoken" data-i="${i}" ${x.spoken ? "checked" : ""}> The agent may say it</label></td></tr>`;
-  return `<div class="stack">
-  <div><h2>Data mapping</h2><p class="muted">Every variable this prompt uses is mapped for you. Untick what you don't need, add more below, or change a column name.</p></div>
-  <div class="row" style="gap:10px;align-items:stretch">
-   <div class="dropzone" id="allocDrop" style="flex:1;min-width:240px;text-align:left">Drop the client's allocation file (CSV or Excel) to use its exact column names, or <label style="color:var(--accent);cursor:pointer;text-decoration:underline">choose a file<input type="file" id="allocFile" accept=".csv,.xlsx,.xls" hidden></label>.${heads.length ? `<div class="small" style="margin-top:6px">${heads.length} columns read.</div>` : ""}</div>
-   ${(R.agents || []).length ? `<label class="f" style="flex:1;min-width:220px">Or copy the names one agent uses<select id="f-agentvars" data-act-change="agentvars"><option value="">Choose an agent…</option>${(R.agents || []).filter(a => (a.variables || []).length).map(a => `<option value="${esc(a.id)}">${esc(a.name)}${a.client ? ` · ${esc(a.client)}` : ""} (${a.variables.length})</option>`).join("")}</select></label>` : ""}
-  </div>
-  <datalist id="heads">${heads.map(h => `<option value="${esc(h)}">`).join("")}</datalist>
-  <div class="tbl-wrap"><table><thead><tr><th></th><th>Variable</th><th>Used in</th><th>Client column</th></tr></thead><tbody>
-   ${inUse.map(row).join("")}${extras.map(exRow).join("")}
-  </tbody></table></div>
-  ${dropped.length ? `<div class="vitem warn"><span class="ic">!</span><div class="vt"><b>Dropped, but the prompt still uses ${dropped.length === 1 ? "it" : "them"}</b><span>${dropped.map(s => `<a href="#" data-act="map-add" data-k="${s.k}">{${s.k}}</a>`).join(", ")}: click to map again, or switch off the blocks that use ${dropped.length === 1 ? "it" : "them"} on the Assembly step.</span></div></div>` : ""}
-  ${optional.length || pool.size ? `<div class="stack" style="gap:8px"><div class="eyebrow">Also available</div>
-   <div class="row" style="gap:6px">${optional.map(s => `<button type="button" class="btn sm" data-act="map-add" data-k="${s.k}" title="${esc(s.d)}">+ {${s.k}}</button>`).join("")}${[...pool].slice(0, 40).map(([k, from]) => `<button type="button" class="btn sm ghost" data-act="extra-add" data-k="${esc(k)}" data-from="${esc(from)}" title="From ${esc(from)}">+ {${esc(k)}}</button>`).join("")}</div></div>` : ""}
-  <div class="row" style="gap:8px"><input type="text" id="extra-new" placeholder="Add your own field, e.g. branch_name" style="max-width:280px"><button class="btn sm" data-act="extra-new">Add field</button></div>
-  </div>`;
-}
-function applyHeaders(heads, src) {
-  const norm = s => String(s).toLowerCase().trim().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
-  R.headers = heads; let n = 0;
-  L.cfg.mapSrc = L.cfg.mapSrc || {}; L.cfg.mapOff = L.cfg.mapOff || [];
-  SCHEMA.forEach(s => { const hit = heads.find(h => norm(h) === s.k) || heads.find(h => (ALIASES[s.k] || []).includes(norm(h))); if (hit && L.cfg.mapSrc[s.k] !== "manual") { L.cfg.mapping[s.k] = hit; L.cfg.mapSrc[s.k] = src || "file"; L.cfg.mapOff = L.cfg.mapOff.filter(k => k !== s.k); n++; } });
-  commit(); toast(`${heads.length} names read · ${n} matched to standard variables`);
-}
 // ---------- Knowledge base from documents ----------
 // Files (or whole folders) are read in the browser. FAQ sheets (question + answer columns) and two-column
 // fact sheets go straight in; everything else is read by the AI in batches. Nothing is added to the
@@ -717,7 +512,7 @@ async function kbBuild() {
   I.progress = { done: 0, total: batches.length }; I.draft = null; render();
   const queue = [...batches];
   await Promise.all([0, 1].map(async () => { for (let b; (b = queue.shift());) {
-    try { const r = await api("POST", "/ai/kb-docs", { docs: b.map(p => ({ name: p.name, text: p.text })), client: L.cfg.client.name, product: L.cfg.client.product, agentType: L.cfg.objective });
+    try { const r = await api("POST", "/ai/kb-docs", { docs: b.map(p => ({ name: p.name, text: p.text })), client: (L.np && L.np.info.client) || L.cfg.client.name, product: (L.np && L.np.info.product) || L.cfg.client.product, agentType: (L.np && L.np.info.type) || L.cfg.objective });
       facts.push(...r.facts); faqs.push(...r.faqs); if (r.oos && !oos) oos = r.oos; provider = r.provider || provider; }
     catch (e) { errors++; }
     I.progress.done++; render();
@@ -754,110 +549,25 @@ function kbImportPanel() {
    </div>` : ""}
   </div>`;
 }
-function kbScore(kb) {
-  const checks = [
-    { t: "At least 3 facts", ok: kb.facts.length >= 3 },
-    { t: "Payment channels stated", ok: kb.facts.some(f => /channel|pay/i.test(f.k + f.v)) },
-    { t: "At least 5 FAQs from real calls", ok: kb.faqs.length >= 5 },
-    // Fees and limits copied from the client's documents (they carry a source) are product facts, not account amounts.
-    { t: "No hard-coded account amounts (use variables)", ok: !(kb.facts.filter(f => !f.src).concat(kb.faqs.filter(f => !f.src).map(f => ({ k: f.q, v: f.a }))).some(f => /₹\s?\d|\brs\.?\s?\d|\d{3,}\s?(rupees|rs)/i.test(f.v))) },
-    { t: "No outcome promises in answers", ok: !kb.faqs.some(f => /will be (waived|approved|removed|updated)|guarantee/i.test(f.a)) },
-    { t: "Out-of-scope answer set", ok: kb.oos.trim().length > 10 }
-  ];
-  return { checks, pass: checks.filter(x => x.ok).length };
-}
-function kbEditor(kb, prefix) {
-  const score = kbScore(kb);
-  return `<div class="stack">
-  ${kbImportPanel()}
-  <div class="row" style="justify-content:space-between"><div class="eyebrow">Facts</div><button class="btn sm" data-act="kb-add" data-kind="facts">Add fact</button></div>
-  ${kb.facts.length ? kb.facts.map((f, i) => `<div class="kv" ${f.src ? `title="From ${esc(f.src)}"` : ""}><input type="text" id="${prefix}fk${i}" data-kb="facts.${i}.k" value="${esc(f.k)}" placeholder="Topic"><input type="text" id="${prefix}fv${i}" data-kb="facts.${i}.v" value="${esc(f.v)}" placeholder="What the agent may say"><button class="btn sm ghost" data-act="kb-del" data-kind="facts" data-i="${i}" aria-label="Remove">✕</button></div>`).join("") : `<div class="empty small">No facts yet. Add channels, charges, product rules.</div>`}
-  <div class="row" style="justify-content:space-between"><div class="eyebrow">FAQs, in the customer's words</div><button class="btn sm" data-act="kb-add" data-kind="faqs">Add FAQ</button></div>
-  ${kb.faqs.length ? kb.faqs.map((f, i) => `<div class="kv" ${f.src ? `title="From ${esc(f.src)}"` : ""}><input type="text" id="${prefix}q${i}" data-kb="faqs.${i}.q" value="${esc(f.q)}" placeholder="Customer asks…"><input type="text" id="${prefix}a${i}" data-kb="faqs.${i}.a" value="${esc(f.a)}" placeholder="Agent answers…"><button class="btn sm ghost" data-act="kb-del" data-kind="faqs" data-i="${i}" aria-label="Remove">✕</button></div>`).join("") : `<div class="empty small">No FAQs yet.</div>`}
-  <label class="f">Out-of-scope answer<input type="text" id="${prefix}oos" data-kb="oos" value="${esc(kb.oos)}"></label>
-  <div class="panel" style="background:var(--sunk);border:0"><b>KB quality: ${score.pass}/${score.checks.length}</b>
-   <div class="stack" style="gap:4px;margin-top:8px">${score.checks.map(ch => `<div class="small"><span style="color:var(--${ch.ok ? "ok" : "warn"});font-weight:700">${ch.ok ? "✓" : "○"}</span> ${ch.t}</div>`).join("")}</div></div>
-
-  </div>`;
-}
-function stepKB(c) { return `<div class="stack"><div><h2>Knowledge base</h2><p class="muted">Section 9 of every prompt. The agent may only state facts written here. Good practice is on the <a href="#knowledge">Knowledge base</a> tab.</p></div>${kbEditor(c.kb, "w")}</div>`; }
-function stepAssembly(c) {
-  const asm = assemble(c);
-  return `<div class="stack">
-  <div><h2>Assembly</h2><p class="muted">Blocks in the fixed section order, each tagged with its layer and source. Drag sections to reorder; switch library objections on or off.</p></div>
-  <div class="row"><button class="btn sm" data-act="canon">Reset to canonical order</button><label class="check small"><input type="checkbox" id="f-tags" data-act-check="tags" ${L.showTags ? "checked" : ""}> Show block text</label></div>
-  <div class="stack" style="gap:8px">${asm.map((s, i) => `
-    <div class="sec" draggable="true" data-sec="${s.sec}">
-      <div class="sec-h"><span class="num">${String(i + 1).padStart(2, "0")}</span><span class="t">${secTitle(s.sec)}</span><span class="small muted">${s.blocks.filter(x => x.on).length} blocks</span>
-       <button class="btn sm ghost" data-act="mv" data-sec="${s.sec}" data-d="-1" aria-label="Move up" ${i === 0 ? "disabled" : ""}>↑</button><button class="btn sm ghost" data-act="mv" data-sec="${s.sec}" data-d="1" aria-label="Move down" ${i === asm.length - 1 ? "disabled" : ""}>↓</button></div>
-      <div class="blocks">${s.blocks.map(x => `<div class="blk ${x.on ? "" : "off"}">
-        ${OPTIONAL.has(x.b.id) ? `<input type="checkbox" id="blk-${x.b.id}" data-act-check="blk" data-id="${x.b.id}" ${x.on ? "checked" : ""} aria-label="Include ${esc(x.b.t)}" style="margin-top:3px;accent-color:var(--accent)">` : `<span class="lock" style="width:13px;text-align:center" title="${x.b.edit}">${x.b.edit === "locked" ? "■" : "·"}</span>`}
-        <div class="bt"><b>${esc(x.b.t)}</b> <code class="muted">${x.b.id}</code>${x.edited || x.added ? ` <span class="chip acc">${x.added ? "added in review" : "edited in review"}</span> <a href="#" class="small" data-act="blk-reset" data-id="${x.b.id}">${x.added ? "Remove" : "Restore original"}</a>` : ""}${L.showTags ? `<pre class="prompt" style="margin-top:6px;max-height:200px">${esc(x.text)}</pre>` : ""}</div>
-        <div class="row" style="gap:4px">${layerChip(x.b.layer)}<span class="chip src">${esc(x.b.src)}</span></div></div>`).join("")}</div>
-    </div>`).join("")}</div></div>`;
-}
-function stepValidate(c, vals) {
-  const errs = vals.filter(v => v.lvl === "err").length, warns = vals.filter(v => v.lvl === "warn").length;
-  return `<div class="stack">
-  <div><h2>Validate</h2><p class="muted">${errs} blocking · ${warns} warnings. Rule checks run instantly; the AI review reads the whole prompt for contradictions.</p></div>
-  <div class="stack" style="gap:6px">${vals.map(v => `<div class="vitem ${v.lvl}"><span class="ic">${{ err: "✕", warn: "!", ok: "✓", info: "i" }[v.lvl]}</span><div class="vt"><b>${esc(v.t)}</b><span>${esc(v.d)}</span></div>${v.lvl !== "ok" && v.step !== 8 ? `<button class="btn sm" style="margin-left:auto" data-act="step" data-i="${v.step}">Fix in ${STEPS[v.step]}</button>` : ""}</div>`).join("")}</div>
-  <div class="panel" style="background:var(--sunk);border:0"><div class="row" style="justify-content:space-between"><div><b>AI review</b><div class="small muted">Contradictions, rules a persona line could override, missing situations, compliance risk.</div></div>
-   <button class="btn primary sm ai" data-act="ai-review" ${aiOn() ? "" : "disabled title='No AI model configured on the server'"}>Run AI review</button></div>
-   <div id="aiReview" class="stack" style="gap:6px;margin-top:10px">${R.aiReview ? renderReview(R.aiReview) : ""}</div></div>
-  </div>`;
-}
-// AI review results. Each issue carries a fix that can be applied right here: new wording for a block,
-// an added rule, or the setup step to change. Applied fixes can be undone.
-function curBlockText(id) { for (const sec of assemble(L.cfg)) { const x = sec.blocks.find(y => y.b.id === id); if (x) return x.text; } return null; }
-function renderReview(list) {
-  if (!list.length) return `<div class="vitem ok"><span class="ic">✓</span><div class="vt"><b>No issues found by the AI review</b></div></div>`;
-  const open = list.filter(r => r.fix && r.fix.type !== "setting" && !r.applied && !(r.fix.type === "edit" && curBlockText(r.fix.block) !== r.fix.before));
-  return `${open.length > 1 ? `<div class="row" style="justify-content:space-between"><span class="small muted">${open.length} fixes ready to apply</span><button class="btn sm primary" data-act="rv-all">Apply all ${open.length} fixes</button></div>` : ""}
-  ${list.map((r, i) => {
-    const f = r.fix, lvl = r.severity === "high" ? "err" : r.severity === "medium" ? "warn" : "info";
-    const stale = f && f.type === "edit" && !r.applied && curBlockText(f.block) !== f.before;
-    const body = !f ? `<div class="small muted">No automatic fix for this one. ${esc(r.suggestion)}</div>`
-      : f.type === "setting" ? `<div class="row" style="gap:8px"><span class="small"><b>Change on ${esc(f.step)}:</b> ${esc(f.change)}</span><button class="btn sm" data-act="step" data-i="${STEPS.indexOf(f.step)}">Go to ${esc(f.step)}</button></div>`
-      : `${f.type === "edit" ? `<div class="small muted">Rewords <code>${esc(f.block)}</code> in ${esc(secTitle(f.sec))}</div>${diffHtml(f.before, f.text, { bare: true })}` : `<div class="small muted">Adds a rule to ${esc(secTitle(f.sec))}</div>${diffHtml("", f.text, { bare: true })}`}
-        <div class="row" style="gap:8px">${r.applied ? `<span class="small" style="color:var(--ok)"><b>✓ Fixed</b></span><a href="#" class="small" data-act="rv-undo" data-i="${i}">Undo</a>` : stale ? `<span class="small" style="color:var(--warn)">This block changed since the review. Run the review again.</span>` : `<button class="btn sm primary" data-act="rv-apply" data-i="${i}">Apply fix</button>`}</div>`;
-    return `<div class="fb" style="gap:8px;${r.applied ? "background:var(--sunk);box-shadow:none" : ""}"><div class="row" style="gap:8px;align-items:flex-start"><span class="sev ${esc(r.severity)}"></span><div style="flex:1;min-width:0"><b>${esc(secTitle(r.section) || r.section)}: ${esc(r.issue)}</b><div class="small muted">${esc(r.suggestion)}</div></div><span class="chip ${lvl}">${esc(r.severity)}</span></div>${body}</div>`;
-  }).join("")}`;
-}
-function applyReviewFix(r) {
-  const f = r.fix, c = L.cfg; c.overrides = c.overrides || {}; c.addons = c.addons || {};
-  if (!f || f.type === "setting" || r.applied) return false;
-  if (f.type === "edit") { if (curBlockText(f.block) !== f.before) return false; r.undo = { prev: c.overrides[f.block] }; c.overrides[f.block] = f.text; }
-  else { c.addons[f.sec] = [...(c.addons[f.sec] || []), f.text]; }
-  r.applied = true; return true;
-}
-function stepGenerate(c, vals) {
-  const errs = vals.filter(v => v.lvl === "err");
-  const md = toMarkdown(header(c, L.genVersion || "1.0"), c.order, sectionsFrom(c), L.genTags !== false);
-  return `<div class="stack">
-  <div><h2>Save</h2><p class="muted">Saving creates a draft version in the shared prompt registry. From there it goes through approval like any other change.</p></div>
-  ${errs.length ? `<div class="vitem err"><span class="ic">✕</span><div class="vt"><b>${errs.length} blocking issue${errs.length > 1 ? "s" : ""}</b><span>${esc(errs.map(e => e.t).join(" · "))}</span></div><button class="btn sm" style="margin-left:auto" data-act="step" data-i="8">Review</button></div>` : ""}
-  <div class="fgrid"><label class="f">Version<input type="text" id="f-ver" data-act-input="ver" value="${esc(L.genVersion || "1.0")}"></label>
-   <label class="f">Link to live agent <span class="hint">(optional)</span><select id="f-link" data-act-change="link"><option value="">Not linked</option>${(R.agents || []).map(a => `<option value="${esc(a.id)}" ${L.linkAgent === a.id ? "selected" : ""}>${esc(a.client)} · ${esc(a.name)}</option>`).join("")}</select></label></div>
-  <label class="check small"><input type="checkbox" id="f-gtags" data-act-check="gtags" ${L.genTags !== false ? "checked" : ""}> Show block tags in the preview</label>
-  <div class="row"><button class="btn primary" data-act="save-prompt" ${errs.length || !canDo("edit") ? "disabled" : ""}>Save as draft</button><button class="btn" data-act="copy-md">Copy</button><button class="btn" data-act="dl-md">Download .md</button><span class="small muted">${words(md).toLocaleString()} words</span></div>
-  <pre class="prompt" id="mdOut">${esc(md)}</pre></div>`;
-}
 
 // ---------- IMPROVE ----------
-const TABS = [["prompt", "Prompt"], ["calls", "Calls"], ["changes", "Make a change"], ["settings", "Settings"], ["history", "History"]];
+// Three tabs; Settings and History open from the ⋯ menu.
+const TABS = [["calls", "Calls"], ["prompt", "Prompt"], ["changes", "Changes"]];
+const MORE_TABS = { settings: "Settings", history: "History" };
 function agentHead(agent, cur) {
   const live = cur && cur.versions.find(v => v.status === "live");
   const title = agent ? agent.name : cur.prompt.name;
   const uat = agent && agent.uatAgentId ? (R.agents || []).find(a => a.id === agent.uatAgentId) : null;
   const uatOf = agent ? (R.agents || []).find(a => a.uatAgentId === agent.id) : null;
   const sub = agent ? [agent.client, live && live.sarvamVersion ? `live in Sarvam v${live.sarvamVersion}` : null, uat ? `UAT agent: ${uat.name}` : null, uatOf ? `UAT agent for ${uatOf.name}` : null, agent.clonedFrom ? `copied from ${agent.clonedFrom.name}` : null, agent.sarvamName && agent.sarvamName !== agent.name ? `Sarvam name: ${agent.sarvamName}` : null].filter(Boolean).join(" · ") : "Not linked to a live agent";
-  const more = agent ? `<details class="more"><summary class="btn sm ghost">⋯</summary><div class="more-pop">
+  const agentItems = agent ? `<hr class="sep">
      ${canDo("approve") ? `<a href="#" data-act="uat-modal" data-id="${esc(agent.id)}">${uat ? "Change UAT agent…" : "Set a UAT agent…"}</a><a href="#" data-act="clone-modal" data-id="${esc(agent.id)}">New agent from this one…</a>` : ""}
      ${R.sarvam && R.sarvam.hasToken && canDo("edit") ? `<a href="#" data-act="pull" data-id="${esc(agent.id)}">Reload prompt from Sarvam</a>` : ""}
      ${canDo("edit") ? `<a href="#" data-act="import" data-id="${esc(agent.id)}">Paste prompt manually</a>` : ""}
 
 
-    </div></details>` : "";
+    ` : "";
+  const more = `<details class="more"><summary class="btn" aria-label="More">⋯</summary><div class="more-pop">${agent ? `<a href="#" data-act="tab" data-t="settings">Settings</a>` : ""}<a href="#" data-act="tab" data-t="history">History and rollback</a>${agentItems}</div></details>`;
   return `<a class="back" href="#agents">← All agents</a>
   <div class="view-head" style="margin-top:6px"><div><h1>${esc(title)}</h1><p>${esc(sub)}</p></div>
    <div class="row" style="gap:16px">${agent ? `<div class="stat" style="text-align:right"><b>${fmtDur(agent.talkSeconds)}</b><div class="small muted">talk time · ${agent.callsPlaced || 0} calls</div></div>` : ""}${more}</div></div>`;
@@ -948,7 +658,7 @@ function viewImprove() {
   const tab = R.tab || "prompt";
   const nCalls = R.calls && R.calls.agentId === (agent || {}).id && R.calls.items ? callsShown(R.calls).length : null;
   const nFix = (R.feedback || []).filter(i => i.status === "mapped").length;
-  const tabs = `<div class="subtabs" role="tablist">${TABS.filter(([k]) => !["calls", "settings"].includes(k) || agent).map(([k, l]) => `<button data-act="tab" data-t="${k}" aria-pressed="${tab === k}">${l}${k === "calls" && nCalls != null ? `<span class="n">${nCalls}</span>` : ""}${k === "changes" && nFix ? `<span class="n hot" title="${nFix} to fix">${nFix}</span>` : ""}</button>`).join("")}</div>`;
+  const tabs = `<div class="subtabs" role="tablist">${TABS.filter(([k]) => k !== "calls" || agent).map(([k, l]) => `<button data-act="tab" data-t="${k}" aria-pressed="${tab === k}">${l}${k === "calls" && nCalls != null ? `<span class="n">${nCalls}</span>` : ""}${k === "changes" && nFix ? `<span class="n hot" title="${nFix} to fix">${nFix}</span>` : ""}</button>`).join("")}${MORE_TABS[tab] ? `<span class="subtab-more">${MORE_TABS[tab]} <a href="#" data-act="tab" data-t="prompt" aria-label="Close">✕</a></span>` : ""}</div>`;
   const ahead = agent && agent.sarvamDraftAhead ? `<div class="notice"><span><b>Sarvam has edits that aren't committed</b> (${agent.sarvamDraftAhead.chars >= 0 ? "+" : ""}${agent.sarvamDraftAhead.chars} characters). Calls don't use them, so they're not shown here. Commit them in Sarvam, then Refresh, to bring them in.</span></div>` : "";
   const body = tab === "calls" ? callsTab(agent) : tab === "changes" ? changesTab(cur) : tab === "history" ? historyTab(cur) : tab === "settings" ? settingsTab(cur, agent) : promptTab(cur);
   const lvv = liveOf(cur), shown = lvv && lvv.sarvamVersion ? Number(lvv.sarvamVersion) : null;
@@ -1007,18 +717,19 @@ function promptTab(cur) {
     : `<div class="md">${tocMd.html}</div>`;
   return `<div class="stack">
    <div class="row" style="justify-content:space-between"><span class="small muted">${note}</span>
-    <div class="row" style="gap:6px">
-     ${canDo("edit") ? `<button class="btn sm primary" data-act="edit-text">✎ Edit</button>` : ""}
-     ${canDo("edit") && aiOn() && !(R.opt && R.opt.promptId === p.id) ? `<button class="btn sm ai" data-act="opt-open" title="Find repeated rules, contradictions and wordy passages">Optimize</button>` : ""}
-     <details class="more"><summary class="btn sm">View ▾</summary><div class="more-pop">
+    <div class="row" style="gap:8px">
+     ${tocMd.toc.length > 2 ? `<select id="toc-jump" data-toc-jump aria-label="Jump to section" style="width:auto;max-width:240px"><option value="">Jump to section…</option>${tocMd.toc.filter((t, _, all) => t.l === (all.some(x => x.l === "2") ? "2" : "3")).map(t => `<option value="${t.id}">${t.t}</option>`).join("")}</select>` : ""}
+     ${canDo("edit") ? `<button class="btn sm primary" data-act="edit-text">Edit</button>` : ""}
+     <details class="more"><summary class="btn sm" aria-label="More">⋯</summary><div class="more-pop">
        <a href="#" data-act="view-mode" data-m="read">${!R.viewRaw && !R.viewSections ? "✓ " : ""}Formatted, as in Sarvam</a>
        <a href="#" data-act="view-mode" data-m="raw">${R.viewRaw && !R.viewSections ? "✓ " : ""}Plain text</a>
        <a href="#" data-act="view-mode" data-m="sections">${R.viewSections ? "✓ " : ""}By builder section</a>
-     </div></details>
-     <button class="btn sm" data-act="copy-prompt">Copy</button><button class="btn sm" data-act="dl-prompt">Download</button></div></div>
+       <hr class="sep">
+       ${canDo("edit") && aiOn() && !(R.opt && R.opt.promptId === p.id) ? `<a href="#" data-act="opt-open" title="Find repeated rules, contradictions and wordy passages">Optimize…</a>` : ""}
+       <a href="#" data-act="copy-prompt">Copy</a><a href="#" data-act="dl-prompt">Download</a>
+     </div></details></div></div>
    ${R.opt && R.opt.promptId === p.id ? optPanel(cur) : ""}
-   <div class="${tocMd.toc.length > 2 ? "doc-wrap" : ""}">${tocMd.toc.length > 2 ? `<nav class="toc" aria-label="Prompt outline"><div class="toc-h">On this page</div>${tocMd.toc.map(t => `<a href="#" class="l${t.l}" data-act="jump" data-to="${t.id}">${t.t}</a>`).join("")}</nav>` : ""}
-   <div class="doc">
+   <div><div class="doc">
     ${cur.agent || greeting ? `<div class="doc-label">Greeting${R.sv && R.sv.greetingChanged ? ` <span class="chip warn">changed in this version</span>` : ""}</div>
     <div class="greet">${greeting ? mdInline(greeting) : `<span class="muted">No greeting set</span>`}</div>
     ${translations.length && !(R.sv && R.sv.greetingChanged) ? `<details class="trans"><summary class="btn sm">Translations (${translations.length})</summary><div class="stack" style="gap:6px;margin-top:8px">${translations.map(([l, t]) => `<div><span class="chip">${esc(l)}</span> ${mdInline(t)}</div>`).join("")}</div></details>` : R.sv && R.sv.greetingChanged ? `<div class="small muted">Sarvam regenerates the translations from this when it's pushed.</div>` : ""}` : ""}
@@ -1236,15 +947,14 @@ function changesTab(cur) {
   const mode = R.inMode || "paste";
   return `
   <div class="changes">
-   <div class="in"><div class="panel stack">
-    <div><h2>What should change?</h2></div>
+   <details class="in-box" data-in-box ${R.inOpen != null ? (R.inOpen ? "open" : "") : (items.some(i => i.status === "mapped" || i.status === "new") ? "" : "open")}><summary class="btn">+ Add feedback or a call</summary><div class="stack" style="margin-top:16px">
     <div class="seg" role="tablist" style="align-self:flex-start"><button type="button" data-act="in-mode" data-m="paste" aria-pressed="${mode === "paste"}">Paste feedback</button><button type="button" data-act="in-mode" data-m="call" aria-pressed="${mode === "call"}">Analyse a call</button></div>
     ${mode === "call" ? transcriptPanel(cur, true) : `<p class="small muted">From UAT, a call review or the client. Each line becomes one item.</p>
     <label class="f">From<select id="f-src">${["Client UAT", "Founders", "Internal QA", "Call review", "Client stakeholder"].map(s => `<option ${s === (L.fbSource || "Client UAT") ? "selected" : ""}>${s}</option>`).join("")}</select></label>
     <label class="f">Paste text <span class="hint">(numbered or bulleted lists split into items)</span><textarea id="f-raw" rows="8" data-act-input="raw">${esc(L.fbRaw || "")}</textarea></label>
     <div class="dropzone" id="fbDrop">Drop an Excel, CSV, Word or text file, or <label style="color:var(--accent);cursor:pointer;text-decoration:underline">choose a file<input type="file" id="fbFile" accept=".xlsx,.xls,.csv,.docx,.txt,.md" hidden></label><div class="small" id="fbFileMsg"></div></div>
     <div class="row"><button class="btn primary" data-act="split" ${canDo("edit") ? "" : "disabled"}>Add items</button><button class="btn ghost sm" data-act="sample-fb">Try sample feedback</button></div>`}
-   </div></div>
+   </div></details>
    <div class="stack">
     <div class="row" style="justify-content:space-between"><h2>Items to fix</h2>${items.length ? `<span class="small muted">${counts.new || 0} new · ${counts.mapped || 0} to fix · ${counts.applied || 0} done</span>` : ""}</div>
     ${items.some(i => i.status === "new") ? `<div class="row"><button class="btn primary ai" data-act="map-all">Find where each item goes in the prompt</button></div>` : ""}
@@ -1742,27 +1452,6 @@ function viewModule() {
   </div>`;
 }
 
-// ---------- KNOWLEDGE / LIBRARY ----------
-function viewKnowledge() {
-  const c = L.cfg;
-  const bp = [
-    ["Facts, not prose", "One fact per line: a topic and what the agent may say. The model follows short facts more reliably than paragraphs."],
-    ["FAQs in the customer's words", "Write the question the way borrowers say it on calls, not policy language. Pull them from call reviews."],
-    ["Variables, never numbers", "Amounts, dates and counts come from the allocation file as {variables}. A hard-coded amount goes stale and becomes a wrong fact."],
-    ["No outcome promises", "Answers say what the agent will do (note it, raise a request), never what will happen (waived, approved, updated)."],
-    ["One out-of-scope line", "When a question isn't covered, the agent says one fixed line instead of guessing. This is the main defence against hallucination."],
-    ["English instructions, any language on the call", "Write the KB in English. The agent translates when speaking, so one KB serves all 11 languages."],
-    ["Owner and review date", "Each client KB has an owner on the client side and is reviewed after every UAT round. Feedback mapped to the KB lands here."],
-    ["Policy stays in policy", "\"Can I get a discount?\" is answered by the client policy toggle, then echoed in the KB. The KB never contradicts a policy toggle."]
-  ];
-  return `
-  <div class="view-head"><div><h1>Knowledge base</h1><p>Section 9 of every prompt: the only product facts the agent may state. Editing here updates the prompt you're creating.</p></div></div>
-  <div class="grid2">
-   <div class="panel stack"><h2>Good practice</h2>
-    <div class="stack" style="gap:10px">${bp.map(([t, d], i) => `<div><b>${i + 1}. ${t}</b><p class="muted small">${d}</p></div>`).join("")}</div></div>
-   <div class="panel stack"><div><h2>KB for ${esc(c.client.name || "the current draft")}</h2><p class="muted small">From the prompt in Create.</p></div>${kbEditor(c.kb, "k")}</div>
-  </div>`;
-}
 function viewLibrary() {
   const f = L.libFilter || "all";
   const list = BLOCKS.filter(b => f === "all" || b.layer === f);
@@ -1783,36 +1472,6 @@ function viewLibrary() {
 const item = id => (R.feedback || []).find(i => i.id === id);
 async function reloadCur() { await Promise.all([loadCur(R.curId), loadPrompts(true), api("GET", "/approvals").then(r => R.approvals = r.items).catch(() => { })]); render(); }
 const ACT = {
-  step: el => { L.step = +el.dataset.i; saveLocal(); render(); window.scrollTo({ top: 0 }); },
-  reset: () => { L.cfg = baseCfg(); L.step = 0; R.aiReview = null; R.headers = []; commit(); toast("Started a new prompt"); },
-  preset: el => { const k = el.dataset.k; const c = baseCfg(); if (k !== "blank") PRESETS[k].apply(c); c.preset = k; L.cfg = c; R.aiReview = null; commit(); toast(k === "blank" ? "Blank prompt: shared core only" : `Loaded ${PRESETS[k].label}`); },
-  seg: el => { setPath(L.cfg, el.dataset.path, JSON.parse(el.dataset.val)); R.aiReview = null; commit(); },
-  lang: el => { const Ls = L.cfg.client.languages, l = el.dataset.l, i = Ls.indexOf(l); i >= 0 ? Ls.splice(i, 1) : Ls.push(l); commit(); },
-  "kb-add": el => { const k = el.dataset.kind; L.cfg.kb[k].push(k === "facts" ? { k: "", v: "" } : { q: "", a: "" }); commit(); },
-  "kb-del": el => { L.cfg.kb[el.dataset.kind].splice(+el.dataset.i, 1); commit(); },
-  "kb-ai": el => run(el, async () => {
-    const notes = ($("#" + el.dataset.prefix + "notes") || {}).value || "";
-    const r = await api("POST", "/ai/kb", { notes, client: L.cfg.client.name, product: L.cfg.client.product });
-    L.cfg.kb.facts.push(...r.facts); L.cfg.kb.faqs.push(...r.faqs); if (r.oos) L.cfg.kb.oos = r.oos;
-    commit(); toast(`Added ${r.facts.length} facts and ${r.faqs.length} FAQs. Review them before use.`);
-  }, "Thinking…"),
-  canon: () => { L.cfg.order = [...CANON]; commit(); },
-  mv: el => { const o = L.cfg.order, i = o.indexOf(el.dataset.sec), j = i + (+el.dataset.d); if (j < 0 || j >= o.length) return; [o[i], o[j]] = [o[j], o[i]]; commit(); },
-  "ai-review": el => run(el, async () => {
-    const blocks = assemble(L.cfg).flatMap(sec => sec.blocks.filter(x => x.on).map(x => ({ id: x.b.id, sec: sec.sec, locked: fixedBlock(x.b), text: x.text })));
-    const r = await api("POST", "/ai/review", { blocks, steps: STEPS.slice(0, 7) }); R.aiReview = r.issues; render(); }, "Reviewing (about a minute)…"),
-  "rv-apply": el => { const r = (R.aiReview || [])[+el.dataset.i]; if (r && applyReviewFix(r)) { commit(); toast("Fix applied. It's in the prompt now."); } else toast("That fix no longer fits. Run the review again."); },
-  "rv-all": () => { let n = 0; (R.aiReview || []).forEach(r => { if (applyReviewFix(r)) n++; }); commit(); toast(`${n} fix${n === 1 ? "" : "es"} applied.`); },
-  "rv-undo": el => { const r = (R.aiReview || [])[+el.dataset.i], c = L.cfg; if (!r || !r.applied) return; const f = r.fix;
-    if (f.type === "edit") { if (r.undo && r.undo.prev != null) c.overrides[f.block] = r.undo.prev; else delete c.overrides[f.block]; }
-    else { const a = c.addons[f.sec] || [], k = a.lastIndexOf(f.text); if (k >= 0) a.splice(k, 1); }
-    r.applied = false; commit(); toast("Undone."); },
-  "blk-reset": el => { const c = L.cfg, id = el.dataset.id, m = id.match(/^ADD-(.+)-(\d+)$/); if (m) { if (c.addons && c.addons[m[1]]) c.addons[m[1]].splice(+m[2] - 1, 1); } else if (c.overrides) delete c.overrides[id]; commit(); },
-  "save-prompt": el => run(el, async () => {
-    const c = L.cfg, v = L.genVersion || "1.0";
-    const r = await api("POST", "/prompts", { name: `${c.client.name || "Untitled"} · ${bucketT(c.bucket)}`, cfg: c, sections: sectionsFrom(c), order: c.order, version: v, agentId: L.linkAgent || null });
-    R.curId = r.promptId; R.agentId = null; R.tab = "prompt"; toast(`Saved as draft v${v}`); location.hash = "#improve";
-  }, "Saving…"),
   "copy-md": () => copyText($("#mdOut").textContent),
   "dl-md": () => downloadText(fileName(L.cfg, L.genVersion || "1.0"), $("#mdOut").textContent),
   sync: el => run(el, async () => {
@@ -1959,11 +1618,6 @@ const ACT = {
     const f = D.facts.filter(x => x.on).map(({ k, v, src, kind }) => ({ k, v, src, kind })), q = D.faqs.filter(x => x.on).map(({ q, a, src }) => ({ q, a, src }));
     kb.facts.push(...f); kb.faqs.push(...q); if (D.useOos && D.oos) kb.oos = D.oos;
     I.draft = null; commit(); toast(`Added ${f.length} facts and ${q.length} FAQs to the knowledge base.`); },
-  "map-add": el => { const k = el.dataset.k, c = L.cfg; c.mapOff = (c.mapOff || []).filter(x => x !== k); c.mapSrc = c.mapSrc || {}; const seen = agentNames()[k], h = (R.headers || []).find(x => stdOf(x) === k);
-    c.mapping[k] = h || (seen && seen.name) || k; c.mapSrc[k] = h ? "file" : seen ? `agents:${seen.agents.length}` : "standard"; commit(); },
-  "extra-add": el => { addExtra(el.dataset.k, el.dataset.from); },
-  "extra-new": () => { const v = ($("#extra-new") || {}).value || ""; if (!snake(v)) return toast("Type a field name first."); addExtra(v, ""); },
-  preview: () => { L.preview = !L.preview; commit(); },
   "in-mode": el => { R.inMode = el.dataset.m; render(); },
   jump: el => { const t = document.getElementById(el.dataset.to); if (t) t.scrollIntoView({ behavior: "smooth", block: "start" }); },
   "cv-jump": el => { const t = document.getElementById(el.dataset.to); if (t) { t.scrollIntoView({ behavior: "smooth", block: "center" }); t.parentElement.classList.add("cv-flash"); setTimeout(() => t.parentElement.classList.remove("cv-flash"), 1600); } },
@@ -2128,7 +1782,7 @@ document.addEventListener("click", e => {
 });
 $("#modal").addEventListener("click", e => { if (e.target.id === "modal") closeModal(); });
 // Remember which feedback-history group is open, so it stays open when the page redraws.
-document.addEventListener("toggle", e => { const d = e.target; if (d.matches && d.matches("details[data-fbm]")) { R.fbMore = R.fbMore || new Set(); d.open ? R.fbMore.add(d.dataset.fbm) : R.fbMore.delete(d.dataset.fbm); return; } if (d.matches && d.matches("details[data-g]")) { if (d.open) R.fbOpen = d.dataset.g; else if (R.fbOpen === d.dataset.g) R.fbOpen = null; } }, true);
+document.addEventListener("toggle", e => { const d = e.target; if (d.matches && d.matches("details[data-in-box]")) { R.inOpen = d.open; return; } if (d.matches && d.matches("details[data-fbm]")) { R.fbMore = R.fbMore || new Set(); d.open ? R.fbMore.add(d.dataset.fbm) : R.fbMore.delete(d.dataset.fbm); return; } if (d.matches && d.matches("details[data-g]")) { if (d.open) R.fbOpen = d.dataset.g; else if (R.fbOpen === d.dataset.g) R.fbOpen = null; } }, true);
 document.addEventListener("click", e => $$("details.more[open]").forEach(d => { if (!d.contains(e.target)) d.open = false; }));
 document.addEventListener("keydown", e => { if (e.key === "Escape" && !$("#modal").hidden) closeModal(); });
 
@@ -2136,13 +1790,13 @@ document.addEventListener("input", e => {
   const el = e.target;
   if (el.dataset.bind && el.type !== "checkbox" && el.tagName !== "SELECT") { let v = el.value; if (el.type === "number") v = Number(v) || 0; setPath(L.cfg, el.dataset.bind, v); R.aiReview = null; commit(false); return; }
   if (el.dataset.kb) { setPath(L.cfg.kb, el.dataset.kb, el.value); saveLocal(); refreshInsights(); return; }
+  if (el.dataset.tocJump != null) { const t = document.getElementById(el.value); if (t) t.scrollIntoView({ behavior: "smooth", block: "start" }); el.value = ""; return; }
+  if (el.dataset.agQ != null) { R.agQ = el.value; render(); const q = $("#ag-q"); if (q) { q.focus(); q.setSelectionRange(q.value.length, q.value.length); } return; }
   const a = el.dataset.actInput;
   if (a === "channels") { L.cfg.policy.channels = el.value.split(",").map(s => s.trim()).filter(Boolean); commit(false); }
   if (a === "ver") { L.genVersion = el.value.trim() || "1.0"; saveLocal(); const o = $("#mdOut"); if (o) o.textContent = toMarkdown(header(L.cfg, L.genVersion), L.cfg.order, sectionsFrom(L.cfg), L.genTags !== false); }
   if (a === "raw") { L.fbRaw = el.value; saveLocal(); }
   if (a === "kb-paste") { kbImp().paste = el.value; return; }
-  if (a === "map-col") { const k = el.dataset.k; L.cfg.mapping[k] = el.value.trim(); L.cfg.mapSrc = L.cfg.mapSrc || {}; L.cfg.mapSrc[k] = "manual"; commit(false); }
-  if (a === "extra-d") { const x = (L.cfg.extraVars || [])[+el.dataset.i]; if (x) { x.d = el.value; commit(false); } }
   if (el.id === "flag-note" && R.call) R.call.flagNote = el.value;
   if (el.dataset.gt != null && R.call && R.call.sel && R.call.sel[el.dataset.gt]) R.call.sel[el.dataset.gt][el.dataset.gf] = el.value;
   if (el.dataset.gnote && R.call) R.call.gnote = el.value;
@@ -2162,9 +1816,6 @@ document.addEventListener("change", e => {
   const c = el.dataset.actCheck;
   if (c === "kbd-on") { const D = kbImp().draft; if (D) { D[el.dataset.kind][+el.dataset.i].on = el.checked; render(); } return; }
   if (c === "kbd-oos") { const D = kbImp().draft; if (D) D.useOos = el.checked; return; }
-  if (c === "map-on" && !el.checked) { const k = el.dataset.k; L.cfg.mapping[k] = ""; L.cfg.mapOff = [...new Set([...(L.cfg.mapOff || []), k])]; commit(); return; }
-  if (c === "extra-off" && !el.checked) { L.cfg.extraVars.splice(+el.dataset.i, 1); commit(); return; }
-  if (c === "extra-spoken") { const x = (L.cfg.extraVars || [])[+el.dataset.i]; if (x) { x.spoken = el.checked; commit(false); } return; }
   if (c === "tags") { L.showTags = el.checked; commit(); }
   if (c === "gtags") { L.genTags = el.checked; commit(); }
   if (c === "blk") { const id = el.dataset.id, o = L.cfg.off; el.checked ? o.splice(o.indexOf(id), 1) : o.push(id); commit(); }
@@ -2195,21 +1846,11 @@ document.addEventListener("change", e => {
   if (a === "link") { L.linkAgent = el.value; saveLocal(); }
   if (a === "cmp-pick") { R.cmpPick = [$("#cmp-a").value, $("#cmp-b").value]; render(); cmpLoad(); }
   if (a === "resec") api("PATCH", `/feedback/${el.dataset.id}`, { section: el.value }).then(reloadCur).catch(err => toast(err.message));
-  if (a === "agentvars") { const ag = (R.agents || []).find(x => x.id === el.value); if (ag) { const keep = R.headers; applyHeaders(ag.variables || [], `agent:${ag.name}`); R.headers = keep; render(); } }
   if (el.id === "f-src") { L.fbSource = el.value; saveLocal(); }
-  if (el.id === "allocFile" && el.files[0]) readHeaders(el.files[0]);
   if ((el.id === "kbFiles" || el.id === "kbFolder") && el.files.length) { const list = [...el.files].map(f => ({ file: f, path: f.webkitRelativePath || f.name })); el.value = ""; kbAddFiles(list); }
   if (el.id === "fbFile" && el.files[0]) readFb(el.files[0]);
   if (el.id === "imFile" && el.files[0]) fileToText(el.files[0]).then(t => { $("#imText").value = t; }).catch(err => toast(err.message));
 });
-async function readHeaders(file) {
-  try {
-    let heads = [];
-    if (/\.csv$/i.test(file.name)) heads = (await file.text()).split(/\r?\n/)[0].split(",").map(s => s.replace(/^"|"$/g, "").trim());
-    else { await loadScript(XLSX_SRC); const wb = XLSX.read(await file.arrayBuffer(), { type: "array", sheetRows: 1 }); heads = (XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1 })[0] || []).map(String); }
-    applyHeaders(heads.filter(Boolean));
-  } catch (e) { toast("Couldn't read that file. Use a CSV or Excel file with a header row."); }
-}
 async function readFb(file) {
   const msg = $("#fbFileMsg"); if (msg) msg.textContent = "Reading " + file.name + "…";
   try {
@@ -2221,7 +1862,7 @@ async function readFb(file) {
 }
 document.addEventListener("dragover", e => { const z = e.target.closest && e.target.closest(".dropzone"); if (z) { e.preventDefault(); z.classList.add("over"); } });
 document.addEventListener("dragleave", e => { const z = e.target.closest && e.target.closest(".dropzone"); if (z) z.classList.remove("over"); });
-document.addEventListener("drop", e => { const z = e.target.closest && e.target.closest(".dropzone"); if (!z) return; e.preventDefault(); z.classList.remove("over"); if (z.id === "kbDrop") { filesFromDrop(e.dataTransfer).then(kbAddFiles); return; } const f = e.dataTransfer.files[0]; if (!f) return; z.id === "allocDrop" ? readHeaders(f) : z.id === "txDrop" ? readTranscript(f) : readFb(f); });
+document.addEventListener("drop", e => { const z = e.target.closest && e.target.closest(".dropzone"); if (!z) return; e.preventDefault(); z.classList.remove("over"); if (z.id === "kbDrop") { filesFromDrop(e.dataTransfer).then(kbAddFiles); return; } const f = e.dataTransfer.files[0]; if (!f) return; z.id === "txDrop" ? readTranscript(f) : readFb(f); });
 async function readTranscript(file) {
   const msg = $("#txFileMsg"); if (msg) msg.textContent = "Reading " + file.name + "…";
   try {
