@@ -43,21 +43,43 @@ function npAdd(np, secId, rule) {
   list.push({ id: npRid(), ...rule }); return true;
 }
 const npAllText = np => [np.greeting, ...Object.values(np.secs).flat().map(x => x.text)].join("\n");
-function npChecks(np, sk) {
-  const out = [];
-  if (!np.greeting.trim()) out.push({ lvl: "err", t: "Greeting is empty", d: "Sarvam needs a greeting for every agent." });
-  sk.sections.filter(s => s.mandatory && !npRules(np, s.id).length).forEach(s => out.push({ lvl: "err", t: `${s.title} is empty`, d: "This section is part of the standard structure. Add a rule from the library or write one.", sec: s.id }));
-  const all = npAllText(np);
-  const params = [...new Set((all.match(/\[\[(\w+)\]\]/g) || []))];
-  if (params.length) out.push({ lvl: "err", t: `${params.length} placeholder${params.length === 1 ? "" : "s"} to fill`, d: `${params.join(", ")}: replace with this client's values, or Refine the rule.` });
-  if (/\[CONFIRM[:\]]/i.test(all)) out.push({ lvl: "err", t: "Some rules still say [CONFIRM: …]", d: "Fill in what's missing before saving." });
-  // Rules taken from other agents can carry their client's name: never let it reach this client's calls.
+// Checks flag what still needs attention. They never block saving a draft; each has its own fix.
+const npOtherClients = (np, all) => {
   const mine = String(np.info.client || "").trim().toLowerCase();
   const others = [...new Set([...(R.agents || []).map(a => a.client), ...Object.values(R.libs || {}).flatMap(l => (l && l.agents || []).map(a => a.client))].map(c => String(c || "").trim()).filter(c => c.length > 2 && c.toLowerCase() !== mine))];
-  const hits = others.filter(c => new RegExp(`\\b${c.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(all));
-  if (hits.length) out.push({ lvl: "err", t: `Mentions another client: ${hits.join(", ")}`, d: "Some rules came from other agents. Refine them for this client, or edit the name out." });
+  return others.filter(c => new RegExp(`\\b${c.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(all));
+};
+const npOpenNotes = np => Object.entries(np.secs).flatMap(([sec, list]) => list.flatMap(x => (x.notes || []).filter(n => !n.done).map(n => ({ sec, rule: x, note: n }))));
+function npChecks(np, sk) {
+  const out = [];
+  if (!np.greeting.trim()) out.push({ lvl: "warn", t: "Greeting is empty", d: "Sarvam needs a greeting before this agent can go live.", fix: "greet" });
+  sk.sections.filter(s => s.mandatory && !npRules(np, s.id).length).forEach(s => out.push({ lvl: "warn", t: `${s.title} is empty`, d: "Part of the standard structure.", sec: s.id, fix: "sec" }));
+  const all = npAllText(np);
+  const params = [...new Set((all.match(/\[\[(\w+)\]\]/g) || []).map(x => x.slice(2, -2)))];
+  if (params.length) out.push({ lvl: "warn", t: `${params.length} placeholder${params.length === 1 ? "" : "s"} to fill`, d: "Values only this client has.", params, fix: "params" });
+  if (/\[CONFIRM[:\]]/i.test(all)) out.push({ lvl: "warn", t: "Some rules still contain [CONFIRM: …]", d: "Turn them into questions beside their rules, and the rule text reads cleanly.", fix: "confirm" });
+  const hits = npOtherClients(np, all);
+  if (hits.length) out.push({ lvl: "err", t: `Mentions another client: ${hits.join(", ")}`, d: "Rules copied from other agents carry their client's name.", hits, fix: "client" });
+  const open = npOpenNotes(np);
+  if (open.length) out.push({ lvl: "info", t: `${open.length} question${open.length === 1 ? "" : "s"} to answer`, d: "Shown beside their rules. Answer them, or save and answer later.", fix: "notes" });
   return out;
 }
+// Suggested values for common placeholders, from the client details.
+function npParamGuess(np, k) {
+  const i = np.info, n = k.toLowerCase();
+  if (/agent_?name/.test(n)) return i.agentName || "";
+  if (/legal/.test(n)) return i.legal || "";
+  if (/client|company|lender|brand|bank/.test(n)) return i.client || "";
+  if (/product/.test(n)) return i.product || "";
+  return "";
+}
+// "[CONFIRM: minimum income]" in a rule -> clean text + a question beside the rule.
+function npTakeAsks(text, asks) {
+  const qs = [...(asks || [])];
+  const clean = String(text || "").replace(/\s*\[CONFIRM:?\s*([^\]]*)\]/gi, (m, what) => { if (what.trim()) qs.push(`Confirm: ${what.trim()}`); return what.trim() ? ` ${what.trim()}` : ""; }).replace(/\s{2,}/g, " ").trim();
+  return { text: clean, notes: qs.map(ask => ({ id: npRid(), ask })) };
+}
+const npGreetExample = np => `Namaste {{customer_name}}, main ${np.info.agentName || "Meera"} ${np.info.gender === "male" ? "bol raha" : "bol rahi"} hoon ${np.info.client || "KreditBee"} se.`;
 const npVars = np => [...new Set((npAllText(np).match(/\{\{\s*(\w+)\s*\}\}/g) || []).map(s => s.replace(/[{}\s]/g, "")))];
 
 // ---------- New prompt view ----------
@@ -100,6 +122,13 @@ function npSource(np, lib) {
    <div class="step-foot"><button class="btn ghost" data-act="np-step" data-i="0">← Back</button><button class="btn primary" data-act="np-go-review" ${s.kind === "agent" && !s.agentId ? "disabled" : ""}>Next: Review →</button></div></div>`;
 }
 function npRuleRow(np, secId, x, sk) {
+  const open = (x.notes || []).filter(n => !n.done);
+  if (!open.length) return npRuleBox(np, secId, x, sk);
+  return `<div class="np-row">${npRuleBox(np, secId, x, sk)}<div class="np-notes">${open.map(n => `<div class="np-note" id="np-note-${n.id}"><div class="small"><b>Question</b> ${esc(n.ask)}</div>
+    <input type="text" id="np-ans-${n.id}" placeholder="Your answer">
+    <div class="row" style="gap:8px"><button class="btn sm primary ai" data-act="np-note-apply" data-id="${x.id}" data-n="${n.id}">Apply</button><a href="#" class="small" data-act="np-note-x" data-id="${x.id}" data-n="${n.id}">Dismiss</a></div></div>`).join("")}</div></div>`;
+}
+function npRuleBox(np, secId, x, sk) {
   const ed = R.npEdit === x.id, rf = R.npRefine === x.id;
   const origin = x.refined ? `<span class="chip acc">refined · saved to library</span>` : x.ref && x.ref.startsWith("B:") ? `<span class="chip">built-in</span>` : x.ref ? `<span class="chip">library${x.agents && x.agents.length ? ` · ${x.agents.length} agent${x.agents.length === 1 ? "" : "s"}` : ""}</span>` : x.from && x.from.agent ? `<span class="chip">from ${esc(x.from.agent)}</span>` : `<span class="chip">written here</span>`;
   return `<div class="np-rule ${ed || rf ? "on" : ""}">
@@ -141,13 +170,25 @@ function npReview(np, lib) {
      <div class="row" style="gap:12px"><a href="#" class="small" data-act="np-lib" data-sec="${s.id}">+ From library (${sectionEntries(np.info.type, s.id, np.info).length})</a><a href="#" class="small" data-act="np-new" data-sec="${s.id}">+ Write a rule</a>${s.kb ? `<a href="#" class="small" data-act="np-kb" data-sec="${s.id}">+ From documents</a>` : ""}</div>
      ${s.kb && R.npKb === s.id ? kbImportPanel() : ""}</section>`; }).join("")}
    <section class="np-sec"><div class="np-sh"><h3>Checks</h3></div>
-    ${checks.length ? checks.map(c => `<div class="vitem ${c.lvl}"><span class="ic">${c.lvl === "err" ? "✕" : "!"}</span><div class="vt"><b>${esc(c.t)}</b><span>${esc(c.d)}</span></div>${c.sec ? `<button class="btn sm" style="margin-left:auto" data-act="np-lib" data-sec="${c.sec}">Add from library</button>` : ""}</div>`).join("") : `<div class="vitem ok"><span class="ic">✓</span><div class="vt"><b>Ready to save</b></div></div>`}
+    ${checks.length ? checks.map(c => npCheckRow(np, c)).join("") : `<div class="vitem ok"><span class="ic">✓</span><div class="vt"><b>No open issues</b></div></div>`}
     ${vars.length ? `<div class="small muted">Call variables used: ${vars.map(v => `<code>{{${esc(v)}}}</code>`).join(" ")}</div>` : ""}
     <div class="row" style="gap:8px"><button class="btn sm ai" data-act="np-review" ${aiOn() ? "" : "disabled"}>AI review</button><span class="small muted">Reads the whole prompt for contradictions and gaps, and proposes fixes.</span></div>
     ${R.npReview ? npReviewList(np, sk) : ""}</section>
    <div class="step-foot"><button class="btn ghost" data-act="np-step" data-i="1">← Back</button>
-    <div class="row" style="gap:8px"><input type="text" data-np="name" id="np-name" placeholder="Name, e.g. ${esc(np.info.client || "KreditBee")} · ${esc(npTypeT(np.info.type))}" value="${esc(np.name)}" style="width:260px"><button class="btn primary" data-act="np-save" ${checks.some(c => c.lvl === "err") ? "disabled title='Fix the checks first'" : ""}>Save as draft</button></div></div>
+    <div class="row" style="gap:8px"><input type="text" data-np="name" id="np-name" placeholder="Name, e.g. ${esc(np.info.client || "KreditBee")} · ${esc(npTypeT(np.info.type))}" value="${esc(np.name)}" style="width:260px"><button class="btn primary" data-act="np-save" title="${checks.length ? `${checks.length} open issue${checks.length === 1 ? "" : "s"} will be saved with the draft` : "Save as draft"}">Save as draft</button></div></div>
+   ${checks.length ? `<div class="small muted" style="text-align:right">Open issues don't stop you saving: they're kept with the draft and shown on its page.</div>` : ""}
   </div>`;
+}
+function npCheckRow(np, c) {
+  const btn = (act, label, extra = "") => `<button class="btn sm" data-act="${act}" ${extra}>${label}</button>`;
+  const fixes = c.fix === "greet" ? btn("np-fix-greet", "Use the example")
+    : c.fix === "sec" ? btn("np-draft-sec", "Draft with AI", `data-sec="${c.sec}" ${aiOn() ? "" : "disabled"}`) + btn("np-lib", "From library", `data-sec="${c.sec}"`)
+    : c.fix === "confirm" ? btn("np-fix-confirm", "Make them questions")
+    : c.fix === "client" ? btn("np-fix-client", `Replace with ${esc(np.info.client || "this client")}`, np.info.client ? "" : "disabled title='Enter the client name in step 1'")
+    : c.fix === "notes" ? btn("np-notes-go", "Show the first")
+    : "";
+  const params = c.fix === "params" ? `<div class="np-params">${c.params.map(k => `<label class="f"><code>[[${esc(k)}]]</code><input type="text" id="np-p-${esc(k)}" value="${esc(npParamGuess(np, k))}" placeholder="Value for ${esc(k.replace(/_/g, " "))}"></label>`).join("")}<div>${btn("np-fill", "Fill")}</div></div>` : "";
+  return `<div class="vitem ${c.lvl}"><span class="ic">${c.lvl === "err" ? "✕" : c.lvl === "info" ? "?" : "!"}</span><div class="vt" style="flex:1"><b>${esc(c.t)}</b><span>${esc(c.d)}</span>${params}</div><div class="row" style="gap:6px;align-self:center">${fixes}</div></div>`;
 }
 function npReviewList(np, sk) {
   const list = R.npReview || [];
@@ -236,12 +277,37 @@ Object.assign(ACT, {
     const docs = kbImp().files.filter(f => f.status === "ready").map(f => ({ name: f.name, text: f.text || [...f.facts.map(x => `${x.k}: ${x.v}`), ...f.faqs.map(x => `Q: ${x.q}\nA: ${x.a}`)].join("\n") }));
     const r = await api("POST", `/library/${type}/draft`, { info: np.info, docs });
     const ids = new Set(libOf(type).skeleton.sections.map(s => s.id));
-    let n = 0; r.rules.forEach(x => { if (npAdd(np, ids.has(x.section) ? x.section : libOf(type).skeleton.sections[0].id, { text: x.text, title: x.title, from: { agent: "AI draft" } })) n++; });
-    if (!np.greeting.trim() && r.greeting) np.greeting = r.greeting;
-    const confirm = r.rules.filter(x => /\[CONFIRM/i.test(x.text)).length;
-    R.npBestNote = `The AI drafted ${n} rule${n === 1 ? "" : "s"}${confirm ? `; ${confirm} need details only you have (marked [CONFIRM: …])` : ""}. Check every one before saving.`;
+    const only = el.dataset.sec || null;
+    let n = 0, q = 0; r.rules.forEach(x => { const sec = ids.has(x.section) ? x.section : libOf(type).skeleton.sections[0].id; if (only && sec !== only) return;
+      const c = npTakeAsks(x.text, x.asks); if (npAdd(np, sec, { text: c.text, title: x.title, from: { agent: "AI draft" }, notes: c.notes })) { n++; q += c.notes.length; } });
+    if (!only && !np.greeting.trim() && r.greeting) np.greeting = npTakeAsks(r.greeting).text;
+    R.npBestNote = `The AI drafted ${n} rule${n === 1 ? "" : "s"}${q ? `, with ${q} question${q === 1 ? "" : "s"} for you beside them` : ""}. Check every one.`;
     commit();
   }, "Drafting (about a minute)…"),
+  "np-draft-sec": el => ACT["np-draft"](el),
+  "np-fix-greet": () => { const np = npState(); np.greeting = npGreetExample(np); commit(); },
+  "np-fill": () => { const np = npState(), vals = {};
+    $$('[id^="np-p-"]').forEach(i => { if (i.value.trim()) vals[i.id.slice(5)] = i.value.trim(); });
+    if (!Object.keys(vals).length) return toast("Type a value first.");
+    const fill = t => String(t).replace(/\[\[(\w+)\]\]/g, (m, k) => vals[k] != null ? vals[k] : m);
+    np.greeting = fill(np.greeting); Object.values(np.secs).flat().forEach(x => { x.text = fill(x.text); }); commit(); toast("Filled."); },
+  "np-fix-confirm": () => { const np = npState(); let q = 0;
+    Object.values(np.secs).flat().forEach(x => { if (/\[CONFIRM/i.test(x.text)) { const c = npTakeAsks(x.text); x.text = c.text; x.notes = [...(x.notes || []), ...c.notes]; q += c.notes.length; } });
+    commit(); toast(`${q} question${q === 1 ? "" : "s"} now beside ${q === 1 ? "its rule" : "their rules"}.`); },
+  "np-fix-client": () => { const np = npState(), to = np.info.client; if (!to) return; const hits = npOtherClients(np, npAllText(np));
+    const re = new RegExp(`\\b(${hits.map(h => h.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})\\b`, "gi");
+    np.greeting = np.greeting.replace(re, to); Object.values(np.secs).flat().forEach(x => { x.text = x.text.replace(re, to); }); commit(); toast(`Replaced with ${to}. Check the agent's name too.`); },
+  "np-notes-go": () => { const o = npOpenNotes(npState())[0]; if (!o) return; const el = document.getElementById(`np-note-${o.note.id}`); if (el) { el.scrollIntoView({ behavior: "smooth", block: "center" }); const i = $(`#np-ans-${o.note.id}`); if (i) i.focus({ preventScroll: true }); } },
+  "np-note-x": el => { const f = npFind(npState(), el.dataset.id); const n = f && (f.x.notes || []).find(y => y.id === el.dataset.n); if (n) n.done = true; commit(); },
+  "np-note-apply": el => run(el, async () => {
+    const np = npState(), f = npFind(np, el.dataset.id); if (!f) return;
+    const n = (f.x.notes || []).find(y => y.id === el.dataset.n), ans = (($(`#np-ans-${el.dataset.n}`) || {}).value || "").trim();
+    if (!ans) throw new Error("Type the answer first.");
+    const sec = libOf(np.info.type).skeleton.sections.find(s => s.id === f.sec) || {};
+    const r = await api("POST", `/library/${np.info.type}/refine`, { ref: f.x.ref || null, text: f.x.text, title: f.x.title || sec.title, section: f.sec, info: np.info, save: false,
+      note: `The engineer answered the question "${n.ask}": ${ans}. Work this answer into the rule exactly; change nothing else.` });
+    f.x.text = r.text; if (r.ref) { f.x.ref = r.ref; f.x.refined = true; } n.done = true; n.answer = ans; commit();
+  }, "Applying…"),
   "np-lib": el => { R.npLib = R.npLib === el.dataset.sec ? null : el.dataset.sec; R.npOpen = null; render(); const s = document.getElementById(`np-sec-${el.dataset.sec}`); if (s) s.scrollIntoView({ block: "start", behavior: "smooth" }); },
   "np-lib-x": () => { R.npLib = null; render(); },
   "np-open": el => { R.npOpen = R.npOpen === el.dataset.ref ? null : el.dataset.ref; render(); },
@@ -277,10 +343,14 @@ Object.assign(ACT, {
     r.applied = true; commit(); },
   "np-save": el => run(el, async () => {
     const np = npState(), sk = libOf(np.info.type).skeleton;
-    const r = await api("POST", `/library/${np.info.type}/compose`, { name: np.name, info: np.info, greeting: np.greeting, sourceAgentId: np.sourceAgent ? np.sourceAgent.id : null,
+    const issues = npChecks(np, sk).filter(c => c.fix !== "notes").map(c => ({ t: c.t, d: c.d }));
+    const questions = npOpenNotes(np).map(o => ({ section: (sk.sections.find(s => s.id === o.sec) || {}).title || o.sec, rule: o.rule.text.slice(0, 200), ask: o.note.ask }));
+    const r = await api("POST", `/library/${np.info.type}/compose`, { name: np.name, info: np.info, greeting: np.greeting, sourceAgentId: np.sourceAgent ? np.sourceAgent.id : null, issues, questions,
       sections: sk.sections.map(s => ({ id: s.id, title: s.title, rules: npRules(np, s.id).map(x => ({ text: x.text, ref: x.ref || null })) })) });
     L.np = null; R.npReview = null; R.npBestNote = null; saveLocal(); await loadPrompts(true);
-    R.curId = r.promptId; R.agentId = null; R.tab = "prompt"; location.hash = "#improve"; toast("Saved as a draft. Send it for approval, then push it to a Sarvam agent.");
+    R.curId = r.promptId; R.agentId = null; R.tab = "prompt"; location.hash = "#improve";
+    const open = r.openIssues + r.openQuestions;
+    toast(open ? `Saved as a draft with ${open} open item${open === 1 ? "" : "s"}, listed on its page.` : "Saved as a draft. Send it for approval, then push it to a Sarvam agent.");
   }, "Saving…"),
   "np-start": el => { const np = npState(); if (np.info.type !== el.dataset.type) { L.np = null; npState().info.type = el.dataset.type; } saveLocal(); },
   // library page
@@ -330,3 +400,23 @@ document.addEventListener("change", e => {
 // Routes: New prompt and the Library page replace the 10-step wizard and the module list.
 ROUTES.create = { view: viewNewPrompt, load: async () => { await loadAgents(); await loadLibType(npState().info.type); } };
 ROUTES.modules = { view: viewLibraryPage, load: async () => { await Promise.all([loadAgents(true), loadPrompts(true)]); const mr = await api("GET", "/modules"); R.lib = mr.library; await loadLibType(R.libType || "collections", true); if (R.modId) await loadMod(R.modId); const j = libOf(R.libType || "collections").job; if (j && j.state === "running") pollLib(R.libType || "collections"); } };
+
+// Tab in an empty box whose grey example starts with "e.g." puts the example in as real text.
+const exampleOf = el => { const ph = el && el.getAttribute && el.getAttribute("placeholder"); const m = ph && ph.match(/e\.g\.?,?\s*([\s\S]+)$/i); return m ? m[1].replace(/[…]+\s*$/, "").trim() : null; };
+const tabHint = (() => { const d = document.createElement("div"); d.className = "tab-hint"; d.textContent = "Tab ⇥ to use the example"; d.hidden = true; document.body.appendChild(d); return d; })();
+const fillable = el => el && el.matches && el.matches("input[type=text], input:not([type]), textarea") && !el.value && exampleOf(el);
+function placeHint(el) { if (!fillable(el)) { tabHint.hidden = true; return; } const r = el.getBoundingClientRect(); tabHint.style.top = `${r.bottom + 4}px`; tabHint.style.left = `${Math.max(8, r.right - 190)}px`; tabHint.hidden = false; }
+document.addEventListener("focusin", e => placeHint(e.target));
+document.addEventListener("focusout", () => { tabHint.hidden = true; });
+document.addEventListener("input", e => placeHint(e.target));
+window.addEventListener("scroll", () => { if (!tabHint.hidden) placeHint(document.activeElement); }, true);
+document.addEventListener("keydown", e => {
+  if (e.key !== "Tab" || e.shiftKey || e.altKey || e.ctrlKey || e.metaKey) return;
+  const el = e.target; if (!fillable(el)) return;
+  e.preventDefault();
+  const id = el.id; el.value = exampleOf(el);
+  el.dispatchEvent(new Event("input", { bubbles: true }));
+  const now = (id && document.getElementById(id)) || el; // a redraw may have replaced the box
+  now.focus(); try { now.setSelectionRange(now.value.length, now.value.length); } catch (_) { }
+  tabHint.hidden = true;
+});

@@ -226,7 +226,7 @@ r.post('/library/:type/draft', h(async (req, res) => {
   const type = typeOf(req), sk = await skeletonFor(type);
   const { info, docs } = req.body || {};
   const brief = { name: 'Client details (from New prompt)', text: Object.entries(info || {}).filter(([, v]) => v && (!Array.isArray(v) || v.length)).map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(', ') : v}`).join('\n') };
-  const out = await lt.libraryFromDocs({ agentType: type, docs: [brief, ...(Array.isArray(docs) ? docs : [])], skeleton: sk });
+  const out = await lt.libraryFromDocs({ agentType: type, docs: [brief, ...(Array.isArray(docs) ? docs : [])], skeleton: sk, mode: 'draft' });
   res.json({ rules: out.rules, greeting: out.greeting, provider: out.provider });
 }));
 
@@ -237,6 +237,8 @@ r.post('/library/:type/refine', h(async (req, res) => {
   const { ref, text, title, section, info, note } = req.body || {};
   if (!String(text || '').trim()) throw fail(400, 'Nothing to refine.');
   const out = await lt.refineRule({ text, title, section, info, note });
+  // An answer to a drafting question, on a rule that didn't come from the library: rewrite the rule only.
+  if ((req.body || {}).save === false && !(ref && String(ref).startsWith('M:'))) return res.json({ text: out.text, changes: out.changes, ref: null, saved: false, provider: out.provider });
   const parent = ref && String(ref).startsWith('M:') ? await db.get('modules', String(ref).slice(2)) : null;
   const base = parent ? parent.moduleId : `${type === 'sales' ? 'S' : 'C'}-${lt.slug(section || 'rule').toUpperCase()}-${lt.slug(title || 'rule').toUpperCase()}`.slice(0, 48);
   let mid = `${base}~${lt.slug((info && info.client) || 'variant').toUpperCase()}`.slice(0, 70);
@@ -255,20 +257,21 @@ r.post('/library/:type/refine', h(async (req, res) => {
 r.post('/library/:type/compose', h(async (req, res) => {
   if (!can(req.user, 'edit')) throw fail(403, 'Your role cannot create prompts.');
   const type = typeOf(req);
-  const { name, info, greeting, sections, sourceAgentId } = req.body || {};
-  if (!String(greeting || '').trim()) throw fail(400, 'Write the greeting first: Sarvam needs it.');
+  const { name, info, greeting, sections, sourceAgentId, issues, questions } = req.body || {};
+  // A draft is always saved, whatever the checks say: open issues and questions are kept with it and shown on its page.
   const secs = (Array.isArray(sections) ? sections : []).map(s => ({ id: String(s.id), title: String(s.title || s.id), rules: (s.rules || []).map(x => String(x.text || '').trim()).filter(Boolean), refs: (s.rules || []).map(x => x.ref).filter(Boolean) })).filter(s => s.rules.length);
-  if (!secs.length) throw fail(400, 'The instructions are empty.');
   const text = secs.map(s => `## ${s.title}\n\n${s.rules.join('\n\n')}`).join('\n\n');
   const imp = await ai.importPrompt(text, 'New prompt');
   const uses = [];
   for (const ref of secs.flatMap(s => s.refs)) { if (String(ref).startsWith('M:')) { const m = await db.get('modules', String(ref).slice(2)); if (m) uses.push({ moduleId: m.moduleId, moduleVersion: m.v, docId: m.id }); } else uses.push({ builtin: String(ref).slice(2) }); }
   const prompt = await db.put('prompts', { id: uid(), name: String(name || `${(info && info.client) || 'New'} · ${(info && info.agentName) || 'agent'}`).slice(0, 120), agentId: null, agentType: type, cfg: cfgFrom(info), info: info || {}, createdBy: req.user.email, sourceAgentId: sourceAgentId || null });
   const ver = await db.put('versions', { id: uid(), promptId: prompt.id, v: '1.0', status: 'draft', by: req.user.email, rev: 0, sections: imp.sections, order: imp.order, sarvamText: text, greeting: String(greeting).trim(),
-    note: 'Built with New prompt', src: 'New prompt', usesModules: uses, skeletonSections: secs.map(s => s.id), history: [{ at: now(), by: req.user.email, action: 'created', note: `New prompt (${type})` }] });
+    note: 'Built with New prompt', src: 'New prompt', usesModules: uses,
+    openIssues: (Array.isArray(issues) ? issues : []).map(x => ({ t: String(x.t || '').slice(0, 200), d: String(x.d || '').slice(0, 400) })).slice(0, 30),
+    openQuestions: (Array.isArray(questions) ? questions : []).map(x => ({ section: String(x.section || '').slice(0, 80), rule: String(x.rule || '').slice(0, 300), ask: String(x.ask || '').slice(0, 300) })).slice(0, 60), skeletonSections: secs.map(s => s.id), history: [{ at: now(), by: req.user.email, action: 'created', note: `New prompt (${type})` }] });
   await db.put('prompts', { ...prompt, latestVersionId: ver.id });
   await audit(req.user, 'prompt.compose', { type, prompt: prompt.id, sections: secs.length, modules: uses.length });
-  res.json({ promptId: prompt.id, versionId: ver.id, chars: text.length });
+  res.json({ promptId: prompt.id, versionId: ver.id, chars: text.length, openIssues: ver.openIssues.length, openQuestions: ver.openQuestions.length });
 }));
 
 module.exports = r;

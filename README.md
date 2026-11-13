@@ -69,7 +69,7 @@ Set each agent's type under **Agents and their type** on the Library page. Linki
 **New prompt** has three steps:
 1. **Client:** type, client, agent name, product, objective.
 2. **Source:** a live agent (its greeting and rules fill the sections) or a clean slate (the structure, empty).
-3. **Review:** the Greeting and every section. Add rules from the library, or **Use the best modules** (the AI picks the best-fitting rule per section and says why). **Refine** tailors a rule to this client and saves it to the library as a variant. Checks block saving while a required section is empty, a `[[placeholder]]` or `[CONFIRM: …]` is left, or a rule names another client. Save creates a draft; approve and push it as usual.
+3. **Review:** the Greeting and every section. Add rules from the library, or **Use the best modules** (the AI picks the best-fitting rule per section and says why). **Refine** tailors a rule to this client and saves it to the library as a variant. Checks flag an empty greeting or required section, unfilled `[[placeholders]]`, a rule that names another client, and open questions, each with its own fix (draft the section, fill the placeholders, replace the name…). They never block saving: open items are kept with the draft and listed on its Prompt tab. Questions from AI drafting sit beside their rules, never in the rule text; answering one rewrites that rule. In any empty box with an "e.g." example, **Tab** puts the example in.
 
 ### Module library (in git)
 
