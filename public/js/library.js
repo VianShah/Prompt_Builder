@@ -334,7 +334,7 @@ Object.assign(ACT, {
   "np-review": el => run(el, async () => {
     const np = npState(), sk = libOf(np.info.type).skeleton;
     const blocks = [{ id: "GREETING", sec: "greeting", locked: false, text: np.greeting }, ...sk.sections.flatMap(s => npRules(np, s.id).map(x => ({ id: x.id, sec: s.id, locked: false, text: x.text })))];
-    const r = await api("POST", "/ai/review", { blocks, steps: ["Client", "Source"] });
+    const r = await api("POST", "/ai/review", { blocks, steps: ["Client", "Source"], agentType: np.info.type });
     R.npReview = r.issues; render();
   }, "Reviewing (about a minute)…"),
   "np-fix": el => { const np = npState(), r = (R.npReview || [])[+el.dataset.i]; if (!r || !r.fix || r.applied) return; const f = r.fix;

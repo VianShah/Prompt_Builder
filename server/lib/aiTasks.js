@@ -1,22 +1,25 @@
 // Prompts sent to the LLM, and the deterministic fallbacks used when no LLM is configured or it fails.
 const llm = require('./llm');
+const K = require('./agentKind').kind; // collections or sales, for this request
 const PB = require('../../shared/blocks');
 const core = require('../../shared/promptcore');
 
 const LAYER_TEXT = 'L0 voice platform core (shared by every client), L1 compliance core (shared), L2 client profile, L3 client collection policy, L4 persona, L5 DPD bucket strategy, L6 flow modules, L7 objection library, L8 knowledge base, L9 variable schema.';
 const SEC_LAYER = { rules: 'L1', persona: 'L4', speech: 'L0', inputs: 'L9', identity: 'L1', opening: 'L2', flows: 'L6', objections: 'L7', kb: 'L8', dates: 'L3', language: 'L0', hygiene: 'L0', closing: 'L0' };
 
+// A section's title: the version's own (New prompt structures), else the builder's.
+const secT = (v, s) => (v && v.titles && v.titles[s]) || PB.secTitle(s);
 function sectionIndex(v) {
   return v.order.map(sec => {
     const t = v.sections[sec] || '';
     const ids = core.blockTags(t).map(x => `${x.id}(${x.layer})`);
-    return `### ${sec} (${PB.secTitle(sec)}) blocks: ${ids.join(', ')}\n${t.replace(/<!--.*-->\n?/g, '').slice(0, 1600)}`;
+    return `### ${sec} (${secT(v, sec)}) blocks: ${ids.join(', ')}\n${t.replace(/<!--.*-->\n?/g, '').slice(0, 1600)}`;
   }).join('\n\n');
 }
 
 async function mapFeedback(prompt, version, items) {
   const cfg = prompt.cfg || {};
-  const text = `You map feedback on a collections voice-agent prompt (Indian lending, multilingual phone calls) to the prompt section and block that causes the problem.
+  const text = `You map feedback on a ${K().t} voice-agent prompt (${K().domain}) to the prompt section and block that causes the problem.
 
 Layers: ${LAYER_TEXT}
 Client: ${(cfg.client && cfg.client.name) || prompt.name}, ${(cfg.client && cfg.client.product) || ''}, ${PB.bucketT(cfg.bucket || 'b1')}.
@@ -96,7 +99,7 @@ async function draftFix(prompt, version, item) {
   const reviewer = reviewerBlock(version, item);
   const order = [m.section, ...version.order.filter(s => s !== m.section)];
   const secs = order.filter(s => (version.sections[s] || '').trim() || s === m.section);
-  const ask = (retryNote) => `Fix one piece of feedback in a collections voice-agent prompt by EDITING THE EXISTING PROMPT. Reply with the smallest edits, not a rewrite.
+  const ask = (retryNote) => `Fix one piece of feedback in a ${K().t} voice-agent prompt by EDITING THE EXISTING PROMPT. Reply with the smallest edits, not a rewrite.
 
 How to fix it:
 0. Fix the BEHAVIOUR, not just this one example. Work out the general situation behind the feedback (e.g. "the customer gives several dates" rather than "the customer said 17th then 31st") and make the rules handle every case of it. Use the feedback's own case as an example only if it helps the agent.
@@ -115,11 +118,11 @@ Format rules:
 - Keep {{variables}} and markdown (headings, bullets, bold, escaped characters like \\*) exactly as the prompt writes them.
 - Never add threats, outcome promises or amounts that aren't in the prompt.
 ${retryNote || ''}
-Client: ${prompt.name}. The feedback was mapped to: ${PB.secTitle(m.section)} (${m.section}), but the lines to change may be in any section.
+Client: ${prompt.name}. The feedback was mapped to: ${secT(version, m.section)} (${m.section}), but the lines to change may be in any section.
 Feedback: ${item.text}
 ${m.diagnosis ? `Diagnosis: ${m.diagnosis}\n` : ''}${m.fix ? `Suggested fix: ${m.fix}\n` : ''}${(m.quotes || []).length ? `Prompt lines the diagnosis found responsible: ${m.quotes.map(q => JSON.stringify(q.text)).join(' | ')}\n` : ''}${reviewer}
 THE PROMPT, BY SECTION:
-${secs.map(s => `=== SECTION ${s} (${PB.secTitle(s)}) ===\n${version.sections[s] || '(empty)'}`).join('\n\n')}
+${secs.map(s => `=== SECTION ${s} (${secT(version, s)}) ===\n${version.sections[s] || '(empty)'}`).join('\n\n')}
 
 Reply with only JSON: {"edits": [{"section": "section id", "old_text": "...", "new_text": "..."}], "how": "replaced" if you rewrote an existing rule, "modified" if you reworded or extended existing lines, "added" if you had to add a new line (use the strongest that applies), "summary": "one sentence on which existing rule changed and how"${reviewer ? `, "understood": "one or two sentences restating what the reviewer's notes asked for, so they can check you understood them"` : ''}}`;
   const run = async note => {
@@ -151,7 +154,7 @@ Reply with only JSON: {"edits": [{"section": "section id", "old_text": "...", "n
 }
 
 async function review(markdown) {
-  const text = `Review this collections voice-agent prompt (Indian lending, phone calls in several languages). Look for: contradictions between sections; persona lines that could override compliance or client policy; common collection-call situations with no handling; compliance risks (threats, disclosure to third parties, promises of outcomes, invented facts). Ignore style.
+  const text = `Review this ${K().t} voice-agent prompt (${K().domain}). Look for: contradictions between sections; persona lines that could override compliance or client policy; common collection-call situations with no handling; compliance risks (threats, disclosure to third parties, promises of outcomes, invented facts). Ignore style.
 Reply with only a JSON array of up to 8 objects: {"section": "section title", "severity": "high"|"medium"|"low", "issue": "one sentence", "suggestion": "one sentence"}. Return [] if there are no real issues.
 
 PROMPT:
@@ -168,7 +171,7 @@ async function reviewWithFixes({ blocks, steps }) {
   const list = (Array.isArray(blocks) ? blocks : []).filter(x => x && x.id && x.text != null).slice(0, 200);
   const stepNames = (Array.isArray(steps) ? steps : []).map(String).slice(0, 12);
   const secs = [...new Set(list.map(x => x.sec))];
-  const req = `Review this collections voice-agent prompt (Indian lending, phone calls in several languages) and FIX what you find. Look for: contradictions between blocks; persona lines that could override compliance or client policy; common collection-call situations with no handling; compliance risks (threats, disclosure to third parties, promises of outcomes, invented facts). Ignore style and wording preferences.
+  const req = `Review this ${K().t} voice-agent prompt (${K().domain}) and FIX what you find. Look for: contradictions between blocks; persona lines that could override compliance or client policy; common collection-call situations with no handling; compliance risks (threats, disclosure to third parties, promises of outcomes, invented facts). Ignore style and wording preferences.
 
 The prompt is made of blocks. For each issue give exactly one fix:
 - "edit": rewrite ONE block that is not locked. "block" = its id, "new_text" = the whole new text of that block. Change only what the issue needs; keep every other rule, {variable} and number in the block exactly.
@@ -198,7 +201,7 @@ ${list.map(x => `[${x.id}] section=${x.sec}${x.locked ? ' LOCKED' : ''}\n${Strin
 }
 
 async function kbDraft({ notes, client, product }) {
-  const text = `Turn these product notes into a knowledge base for a collections voice agent for ${client || 'a lender'} (${product || 'loan'}).
+  const text = `Turn these product notes into a knowledge base for a ${K().agent} for ${client || 'a lender'} (${product || 'loan'}).
 Rules: only use facts stated in the notes. Write FAQs the way a borrower would ask on a phone call. Answers are one or two sentences, say what the agent says or does, and never promise an outcome (no "will be waived/approved/updated"). Never write specific rupee amounts; refer to them as the amount on the account.
 Reply with only JSON: {"facts":[{"k":"topic","v":"what the agent may say"}],"faqs":[{"q":"customer question","a":"agent answer"}],"oos":"one out-of-scope line, or empty string"}
 
@@ -261,12 +264,33 @@ ${body}`;
 
 // Import an existing Sarvam prompt without rewording it: split into chunks, let the LLM (or keyword rules) assign each
 // chunk to one of the 13 sections, then rebuild each section from the original text in its original order.
+// Re-split a whole prompt into sections after it was edited or rebuilt. A version with its own structure
+// (built with New prompt) keeps it: the text is split at its "## Title" headings. Others use importPrompt.
+function splitOwn(text, base) {
+  const byTitle = new Map(Object.entries(base.titles).map(([id, t]) => [String(t).trim().toLowerCase(), id]));
+  const sections = {}, order = [], titles = { ...base.titles };
+  let cur = null, buf = [];
+  const flush = () => { if (cur) sections[cur] = buf.join('\n').trim(); buf = []; };
+  for (const line of String(text || '').replace(/\r/g, '').split('\n')) {
+    const h = line.match(/^##\s+(.+?)\s*$/);
+    if (h) { flush(); const t = h[1].trim(); let id = byTitle.get(t.toLowerCase()); if (!id) { id = t.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || `section-${order.length + 1}`; titles[id] = t; byTitle.set(t.toLowerCase(), id); } cur = id; if (!order.includes(id)) order.push(id); continue; }
+    if (!cur) { cur = order[0] || Object.keys(base.titles)[0] || 'introduction'; if (!order.includes(cur)) order.push(cur); }
+    buf.push(line);
+  }
+  flush();
+  return { sections, order, titles };
+}
+async function resplit(text, base, label) {
+  if (base && base.titles && /^##\s+\S/m.test(String(text || ''))) return { ...splitOwn(text, base), via: 'own headings' };
+  return importPrompt(text, label);
+}
+
 async function importPrompt(rawText, sourceLabel) {
   const chunks = core.chunkPrompt(rawText);
   let assign = {}, provider = null, via = 'rules';
   if (chunks.length) {
     try {
-      const text = `Assign each numbered chunk of an existing collections voice-agent prompt to exactly one section.
+      const text = `Assign each numbered chunk of an existing ${K().t} voice-agent prompt to exactly one section.
 Sections: ${PB.SECTIONS.map(s => `${s.id} (${s.t})`).join(', ')}.
 Use "rules" for hard do/don't rules, "kb" for product facts and FAQs, "flows" for the main conversation states, "objections" for objection handling and special cases.
 
@@ -294,7 +318,7 @@ async function diagnoseCall(prompt, version, { text, turns, turn, note, callInfo
   const fmt = (t, i) => `[${i}] ${t.role === 'agent' ? 'AGENT' : t.role === 'user' ? 'CUSTOMER' : String(t.role).toUpperCase()}: ${t.text}`;
   const lo = Math.max(0, turn - 12), hi = Math.min(turns.length, turn + 6);
   const text0 = String(text || '').slice(0, 150000);
-  const req = `A reviewer is listening to a real collections call made by a voice agent (Indian lending, phone, several languages) and flagged a mistake. Find why the agent did it, using the agent's prompt below.
+  const req = `A reviewer is listening to a real ${K().call} made by a voice agent (${K().domain}) and flagged a mistake. Find why the agent did it, using the agent's prompt below.
 
 Reviewer's note on turn [${turn}]: ${note || '(no note: work out what went wrong at that turn)'}
 ${callInfo ? `Call details: ${callInfo}\n` : ''}
@@ -464,7 +488,7 @@ Reply with only JSON: {"edits": [{"old_text": "...", "new_text": "..."}], "summa
 // ---- Regression tests ----
 // Turn fixed feedback into small test cases: what the customer says, what the agent must and must not do.
 async function buildTests(items) {
-  const req = `Turn each piece of feedback about a collections voice agent (Indian lending, phone calls) into a short regression test that checks the problem doesn't come back.
+  const req = `Turn each piece of feedback about a ${K().agent} (${K().domain}) into a short regression test that checks the problem doesn't come back.
 
 ${items.map((it, i) => `ITEM ${i + 1}
 Feedback: ${it.text}
@@ -496,7 +520,7 @@ Reply with only JSON: {"replies": ["reply to line 1", "reply to line 2", ...]}`;
   let s; try { s = await llm.json(sim, { maxTokens: 3000 }); } catch (e) { s = await llm.json(sim, { maxTokens: 4000 }); } // one retry on a garbled reply
   const replies = ((s.data && s.data.replies) || []).map(String);
   const transcript = test.customer.map((l, i) => `Customer: ${l}\nAgent: ${replies[i] || '(no reply)'}`).join('\n');
-  const judge = `A regression test for a collections voice agent. Judge ONLY the agent's last reply (and the earlier ones if the test is about the sequence).
+  const judge = `A regression test for a ${K().agent}. Judge ONLY the agent's last reply (and the earlier ones if the test is about the sequence).
 Today in this simulation is ${today}. If the test was written for a different "today", shift its dates by the difference before judging (e.g. "tomorrow" means the day after ${today}; a halfway date is halfway between ${today} and the customer's date). Judge the behaviour, not wording or small rounding.`;
   const judgeBody = `
 Must do: ${test.expect}
@@ -515,7 +539,7 @@ Reply with only JSON: {"pass": true | false, "why": "one sentence"}`;
 // whether it changes what the agent does (those are left for the reviewer to decide).
 async function optimizePrompt(text, { focus, greeting } = {}) {
   const T = String(text || '');
-  const req = `You are tidying a long voice-agent prompt (collections, Indian lending, phone calls in several languages). It has grown through many fixes and now has noise. Make it shorter and cleaner WITHOUT losing anything the agent needs.
+  const req = `You are tidying a long voice-agent prompt (${K().t}, ${K().domain}). It has grown through many fixes and now has noise. Make it shorter and cleaner WITHOUT losing anything the agent needs.
 
 Find and fix, in this order of value:
 1. "contradiction": two places that tell the agent different things. Propose ONE resolution (keep the stricter or more recent-looking rule, and say which you chose and why). Mark changesBehaviour true.
@@ -564,7 +588,7 @@ Up to 25 edits, biggest win first. Keep reasons short.`;
 // A whole call transcript (uploaded or pasted from UAT) read against the prompt the agent had.
 // Lists only what went wrong: each mistake with the moment, its cause in the prompt and a general fix.
 async function analyzeTranscript(prompt, version, { text, transcript, note }) {
-  const req = `You review a full call made by a collections voice agent (Indian lending, phone, several languages) during UAT. Find EVERYTHING the agent did wrong on this call. Do not list what went well.
+  const req = `You review a full call made by a ${K().agent} (${K().domain}) during UAT. Find EVERYTHING the agent did wrong on this call. Do not list what went well.
 
 Look for: compliance problems (recording disclosure, identity check before details, telling a third party about the debt, threats or pressure, calling-hours, promises of outcomes, invented facts or amounts), wrong or missed policy steps (dates, partial payment, promise-to-pay, payment link, escalation), wrong facts or amounts, ignoring what the customer said, repeating itself, asking needless questions, not answering a question, wrong language or script, robotic or unnatural speech, interrupting, bad closing or a missing disposition. Also note a missed opportunity that cost the call (e.g. never asked for a date).
 ${note ? `The reviewer says: ${note}\n` : ''}
@@ -621,11 +645,11 @@ async function critiqueFix(prompt, version, item) {
     const NL = String.fromCharCode(10);
     const removed = before.filter(l => l.trim() && !after.includes(l)).map(l => '- ' + l);
     const added = after.filter(l => l.trim() && !before.includes(l)).map(l => '+ ' + l);
-    return [`=== ${PB.secTitle(s)} ===`, ...removed, ...added].join(NL);
+    return [`=== ${secT(version, s)} ===`, ...removed, ...added].join(NL);
   }).join(String.fromCharCode(10, 10));
   const full = { ...version.sections, ...changed };
   const notes = (item.guidance || []).map((g, i) => `${i + 1}. ${g.text}`).join(String.fromCharCode(10));
-  const req = `You are a strict reviewer of a proposed fix to a collections voice-agent prompt (Indian lending, phone calls, several languages). Another AI drafted the fix from feedback. Pick it apart before it goes live.
+  const req = `You are a strict reviewer of a proposed fix to a ${K().t} voice-agent prompt (${K().domain}). Another AI drafted the fix from feedback. Pick it apart before it goes live.
 
 Feedback: ${item.text}
 ${m.diagnosis ? `Diagnosis: ${m.diagnosis}
@@ -636,7 +660,7 @@ THE PROPOSED CHANGE (- removed line, + added line):
 ${diff.slice(0, 20000)}
 
 THE WHOLE PROMPT WITH THE CHANGE APPLIED, BY SECTION:
-${version.order.filter(s => (full[s] || '').trim()).map(s => `=== ${PB.secTitle(s)} ===\n${full[s]}`).join('\n\n').slice(0, 140000)}
+${version.order.filter(s => (full[s] || '').trim()).map(s => `=== ${secT(version, s)} ===\n${full[s]}`).join('\n\n').slice(0, 140000)}
 
 Check:
 1. Does it fix the general behaviour, or only the exact example in the feedback?
@@ -663,7 +687,7 @@ Give suggestions only for real problems (0 to 6), [] if the fix is ready. Keep e
 // TOGETHER: issues with the same root cause are grouped, so they get one fix instead of several.
 async function diagnoseGroup(prompt, version, { text, turns, issues, note, callInfo }) {
   const fmt = (t, i) => `[${i}] ${t.role === 'agent' ? 'AGENT' : t.role === 'user' ? 'CUSTOMER' : String(t.role).toUpperCase()}: ${t.text}`;
-  const req = `A reviewer listened to a real collections call (Indian lending, phone, several languages) and flagged several moments where the agent went wrong. For each they wrote what happened and what should have happened. Find the ROOT CAUSES in the agent's prompt. Group issues that come from the same cause; one cause can explain several issues.
+  const req = `A reviewer listened to a real ${K().call} (${K().domain}) and flagged several moments where the agent went wrong. For each they wrote what happened and what should have happened. Find the ROOT CAUSES in the agent's prompt. Group issues that come from the same cause; one cause can explain several issues.
 ${note ? `Reviewer's overall note: ${note}\n` : ''}${callInfo ? `Call details: ${callInfo}\n` : ''}
 FLAGGED ISSUES:
 ${issues.map((x, k) => `ISSUE ${k + 1} at turn [${x.turn}]
@@ -712,7 +736,7 @@ Prompt:
 <<<
 ${String(x.text || '').slice(0, 70000)}
 >>>`;
-  const req = `Compare two collections voice-agent prompts (Indian lending, phone calls). A team lead wants to know how the two agents will behave differently on real calls.
+  const req = `Compare two ${K().t} voice-agent prompts (${K().domain}). A team lead wants to know how the two agents will behave differently on real calls.
 Cover what matters: compliance (recording disclosure, identity check, third-party disclosure, threats, calling hours), collection policy (partial payment, promise-to-pay, waivers, links, escalation), tone, branding (who the agent says it is and calls for), product facts, languages, objection handling, closing. Skip wording differences that don't change behaviour.
 
 ${side(a, 'A')}
@@ -730,4 +754,4 @@ At most 10 differences, most important first.`;
     differences: (Array.isArray(d.differences) ? d.differences : []).filter(x => x && x.area).slice(0, 10).map(x => ({ area: String(x.area), a: String(x.a || ''), b: String(x.b || ''), risk: ['high', 'medium', 'low'].includes(x.risk) ? x.risk : 'low' })) };
 }
 
-module.exports = { readImagesToText, reviewWithFixes, kbFromDocs, SKELETON, factoryMap, factoryAssemble, factoryReview, factoryRevise, diagnoseGroup, buildTests, runTest, optimizePrompt, applyEdits, analyzeTranscript, critiqueFix, mapFeedback, draftFix, review, kbDraft, importPrompt, diagnoseCall, compareSummary };
+module.exports = { resplit, readImagesToText, reviewWithFixes, kbFromDocs, SKELETON, factoryMap, factoryAssemble, factoryReview, factoryRevise, diagnoseGroup, buildTests, runTest, optimizePrompt, applyEdits, analyzeTranscript, critiqueFix, mapFeedback, draftFix, review, kbDraft, importPrompt, diagnoseCall, compareSummary };

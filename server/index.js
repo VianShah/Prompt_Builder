@@ -15,6 +15,7 @@ app.get('/healthz', async (req, res) => { const d = await db.ping(); res.status(
 app.post('/api/login', auth.login);
 app.post('/api/logout', auth.logout);
 app.use('/api', auth.requireUser);
+app.use('/api', require('./lib/agentKind').middleware); // collections or sales, per request
 app.get('/api/me', (req, res) => res.json({ user: req.user, selfApprove: config.selfApprove }));
 app.get('/api/health', async (req, res) => res.json({
   db: await db.ping(), llm: llm.labels(), vision: llm.vision(), sarvamPush: config.sarvamPush, library: require('./lib/libraryStore').status(),

@@ -7,6 +7,9 @@ const { can } = require('../auth');
 const { uid, now, h, fail, audit, bump, clone } = require('../lib/util');
 
 const r = express.Router();
+const kind = require('../lib/agentKind');
+// Load a prompt and note its agent type (collections / sales) for the AI instructions.
+const getPrompt = async id => { const p = await db.get('prompts', id); if (p) await kind.fromPrompt(p); return p; };
 async function latestVersion(promptId) {
   const vs = (await db.list('versions', v => v.promptId === promptId)).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   if (!vs.length) throw fail(409, 'This prompt has no versions yet.');
@@ -32,7 +35,7 @@ r.get('/prompts/:id/feedback', h(async (req, res) => {
 
 r.post('/prompts/:id/feedback', h(async (req, res) => {
   if (!can(req.user, 'edit')) throw fail(403, 'Your role cannot add feedback.');
-  const p = await db.get('prompts', req.params.id);
+  const p = await getPrompt(req.params.id);
   if (!p) throw fail(404, 'Prompt not found.');
   const { items, raw, source } = req.body || {};
   const texts = Array.isArray(items) ? items.map(String) : core.splitFeedback(raw || '');
@@ -44,7 +47,7 @@ r.post('/prompts/:id/feedback', h(async (req, res) => {
 }));
 
 r.post('/prompts/:id/feedback/map', h(async (req, res) => {
-  const p = await db.get('prompts', req.params.id);
+  const p = await getPrompt(req.params.id);
   if (!p) throw fail(404, 'Prompt not found.');
   const v = await latestVersion(p.id);
   const items = (await db.list('feedback', f => f.promptId === p.id && f.status === 'new')).slice(0, 40);
@@ -78,7 +81,7 @@ r.get('/prompts/:id/tests', h(async (req, res) => res.json({ items: await db.lis
 // Make tests for fixed (and waiting) feedback that doesn't have one yet.
 r.post('/prompts/:id/tests/build', h(async (req, res) => {
   if (!can(req.user, 'edit')) throw fail(403, 'Your role cannot add tests.');
-  const p = await db.get('prompts', req.params.id);
+  const p = await getPrompt(req.params.id);
   if (!p) throw fail(404, 'Prompt not found.');
   const have = new Set((await db.list('tests', t => t.promptId === p.id)).map(t => t.feedbackId));
   const items = (await db.list('feedback', f => f.promptId === p.id && ['applied', 'mapped'].includes(f.status) && !have.has(f.id))).slice(0, 15);
@@ -102,7 +105,7 @@ r.delete('/tests/:id', h(async (req, res) => {
 // Run every test against one version (default: the latest). Simulated with the AI model playing the
 // agent with that version's exact prompt, so it works on drafts before anything is pushed.
 r.post('/prompts/:id/tests/run', h(async (req, res) => {
-  const p = await db.get('prompts', req.params.id);
+  const p = await getPrompt(req.params.id);
   if (!p) throw fail(404, 'Prompt not found.');
   const versions = (await db.list('versions', x => x.promptId === p.id)).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   const live = versions.find(x => x.status === 'live');
@@ -129,7 +132,7 @@ r.post('/prompts/:id/tests/run', h(async (req, res) => {
 // Read against a chosen version of the prompt (default: the live one, which is what calls use).
 r.post('/prompts/:id/transcript/analyze', h(async (req, res) => {
   if (!can(req.user, 'edit')) throw fail(403, 'Your role cannot add feedback.');
-  const p = await db.get('prompts', req.params.id);
+  const p = await getPrompt(req.params.id);
   if (!p) throw fail(404, 'Prompt not found.');
   const transcript = String((req.body || {}).transcript || '').trim();
   if (transcript.length < 80) throw fail(400, 'Paste or upload the whole call transcript (at least a few lines).');
@@ -146,7 +149,7 @@ r.post('/prompts/:id/transcript/analyze', h(async (req, res) => {
 // Add the mistakes the reviewer ticked as feedback items, already diagnosed and ready to draft.
 r.post('/prompts/:id/transcript/add', h(async (req, res) => {
   if (!can(req.user, 'edit')) throw fail(403, 'Your role cannot add feedback.');
-  const p = await db.get('prompts', req.params.id);
+  const p = await getPrompt(req.params.id);
   if (!p) throw fail(404, 'Prompt not found.');
   const { mistakes, label, versionV, provider } = req.body || {};
   const list = (Array.isArray(mistakes) ? mistakes : []).filter(m => m && m.what).slice(0, 12);
@@ -179,7 +182,7 @@ r.delete('/feedback/:id', h(async (req, res) => {
 r.post('/feedback/:id/draft', h(async (req, res) => {
   const it = await loadItem(req.params.id);
   if (!it.map) throw fail(409, 'Map this item to a section first.');
-  const p = await db.get('prompts', it.promptId);
+  const p = await getPrompt(it.promptId);
   const v = await latestVersion(it.promptId);
   // Reviewer notes: extra details or corrections the AI must build into the fix. Kept on the item,
   // so every later draft (including a batch fix) uses all of them.
@@ -222,7 +225,7 @@ r.patch('/feedback/:id/draft', h(async (req, res) => {
   if (!can(req.user, 'edit')) throw fail(403, 'Your role cannot change fixes.');
   const it = await loadItem(req.params.id);
   if (!it.draft) throw fail(409, 'There is no drafted fix to change.');
-  const p = await db.get('prompts', it.promptId);
+  const p = await getPrompt(it.promptId);
   const v = await latestVersion(it.promptId);
   if (draftStale(it.draft, v)) throw fail(409, 'The prompt changed since this fix was drafted. Draft it again.', 'stale_draft');
   const { section, text } = req.body || {};
@@ -246,7 +249,7 @@ r.patch('/feedback/:id/draft', h(async (req, res) => {
 r.post('/feedback/:id/check', h(async (req, res) => {
   const it = await loadItem(req.params.id);
   if (!it.draft) throw fail(409, 'Draft a fix first, then check it.');
-  const p = await db.get('prompts', it.promptId);
+  const p = await getPrompt(it.promptId);
   const v = await latestVersion(it.promptId);
   if (draftStale(it.draft, v)) throw fail(409, 'The prompt changed since this fix was drafted. Draft it again, then check.', 'stale_draft');
   const c = await ai.critiqueFix(p, v, it);
@@ -260,7 +263,7 @@ r.post('/feedback/:id/apply', h(async (req, res) => {
   if (!can(req.user, 'edit')) throw fail(403, 'Your role cannot change prompts.');
   const it = await loadItem(req.params.id);
   if (!it.map) throw fail(409, 'Map this item to a section first.');
-  const p = await db.get('prompts', it.promptId);
+  const p = await getPrompt(it.promptId);
   const base = await latestVersion(it.promptId);
   const text = typeof (req.body || {}).text === 'string' ? req.body.text : (it.draft && it.draft.revised);
   if (!text) throw fail(400, 'Nothing to apply. Draft a fix or edit the section first.');
@@ -293,7 +296,7 @@ r.post('/feedback/:id/apply', h(async (req, res) => {
 // version and in different sections keep their draft; the rest are drafted now.
 r.post('/prompts/:id/feedback/apply-batch', h(async (req, res) => {
   if (!can(req.user, 'edit')) throw fail(403, 'Your role cannot change prompts.');
-  const p = await db.get('prompts', req.params.id);
+  const p = await getPrompt(req.params.id);
   if (!p) throw fail(404, 'Prompt not found.');
   const ids = Array.isArray((req.body || {}).ids) ? req.body.ids.map(String) : [];
   const items = (await Promise.all(ids.map(id => db.get('feedback', id)))).filter(it => it && it.promptId === p.id && it.status === 'mapped' && it.map);

@@ -5,6 +5,7 @@
 //   <<if family_suggestion>>…<<end>>     a passage kept only when that option is on
 // ({{call_variable}} is left alone: it is a Sarvam call value.)
 const llm = require('./llm');
+const K = require('./agentKind').kind;
 const PB = require('../../shared/blocks');
 const { applyEdits } = require('./aiTasks');
 
@@ -23,7 +24,7 @@ async function moduleExtract(text, { topic, title, tests }) {
   const testBlock = (tests || []).length
     ? NL + 'EXISTING REGRESSION TESTS of this agent. List, by number, only the ones that check THIS behaviour (not other behaviours):' + NL + tests.map(t => `${t.i}. ${t.title}: ${String(t.expect).slice(0, 160)}`).join(NL) + NL
     : '';
-  const req = `You are building a reusable MODULE for a library of voice-agent prompt behaviours (collections, Indian lending, phone calls). Take the behaviour below out of this agent's prompt so other agents can use it.
+  const req = `You are building a reusable MODULE for a library of voice-agent prompt behaviours (${K().t}, ${K().domain}). Take the behaviour below out of this agent's prompt so other agents can use it.
 
 THE BEHAVIOUR TO EXTRACT: ${topic}
 Module title: ${title}

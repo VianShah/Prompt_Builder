@@ -31,7 +31,8 @@ const SECTIONS = [
   {id:"closing", t:"Closing and dispositions"}
 ];
 const CANON = SECTIONS.map(s=>s.id);
-const secTitle = id => (SECTIONS.find(s=>s.id===id)||{t:id}).t;
+// A prompt built with New prompt has its own section names: the browser supplies them through SECTION_TITLE_HOOK.
+const secTitle = id => (typeof SECTION_TITLE_HOOK === "function" && SECTION_TITLE_HOOK(id)) || (SECTIONS.find(s=>s.id===id)||{t:id}).t;
 
 const BUCKETS = [
   {id:"predue", t:"Pre-due / 0", d:"Reminder before or on due date", rec:["friendly","compliant"]},

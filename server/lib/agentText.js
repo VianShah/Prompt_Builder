@@ -9,6 +9,7 @@ async function agentText(agentId) {
   const agent = await db.get('agents', agentId);
   if (!agent) throw fail(404, 'Unknown agent.');
   const p = (await db.list('prompts')).find(x => x.agentId === agent.id);
+  if (p) await require('./agentKind').fromPrompt(p);
   if (!p) throw fail(409, `${agent.name} has no prompt in the builder yet. Open it and load its prompt from Sarvam first.`);
   const vs = sortV(await db.list('versions', x => x.promptId === p.id));
   const base = vs[vs.length - 1], live = vs.find(x => x.status === 'live');
