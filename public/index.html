@@ -5,43 +5,38 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>Prompt Builder · Sarvam agents</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700&family=Sora:wght@500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
 <link rel="stylesheet" href="/css/app.css">
 </head>
 <body>
 <div id="login" class="login" hidden>
   <form class="panel" id="loginForm">
-    <div class="brand"><svg width="28" height="28" viewBox="0 0 28 28" aria-hidden="true"><rect width="28" height="28" rx="7" fill="var(--accent)"/><g stroke="var(--accent-ink)" stroke-width="2" stroke-linecap="round"><path d="M7 14v0M10.5 10v8M14 7v14M17.5 11v6M21 13v2"/></g></svg>
-      <div><b>Prompt Builder</b><small>Kollect · collections voice agents</small></div></div>
+    <div class="brand"><svg width="28" height="28" viewBox="0 0 28 28" aria-hidden="true"><rect width="28" height="28" rx="8" fill="var(--accent)"/><g stroke="var(--accent-ink)" stroke-width="2" stroke-linecap="round"><path d="M7 14v0M10.5 10v8M14 7v14M17.5 11v6M21 13v2"/></g></svg><div><b>Prompt Builder</b><small>Kollect voice agents</small></div></div>
+    <p class="muted small">Sign in to build and improve your voice agents.</p>
     <label class="f">Email<input type="text" id="lEmail" autocomplete="username" required></label>
     <label class="f">Password<input type="password" id="lPass" autocomplete="current-password" required></label>
     <button class="btn primary" type="submit">Sign in</button>
     <p class="small" id="lMsg" style="color:var(--err)"></p>
   </form>
 </div>
-<div id="shell" hidden>
-  <header class="topbar">
-    <div class="topbar-in">
-      <div class="brand">
-        <svg width="28" height="28" viewBox="0 0 28 28" aria-hidden="true"><rect width="28" height="28" rx="7" fill="var(--accent)"/><g stroke="var(--accent-ink)" stroke-width="2" stroke-linecap="round"><path d="M7 14v0M10.5 10v8M14 7v14M17.5 11v6M21 13v2"/></g></svg>
-        <div><b>Prompt Builder</b><small>Kollect · collections voice agents</small></div>
-      </div>
-      <nav class="tabs" id="tabs" aria-label="Sections">
-        <a href="#agents" data-also="improve compare">Agents</a>
-        <a href="#approvals">Approvals <span class="badge" id="apprCount" hidden></span></a>
-      </nav>
-      <details class="more" id="moreMenu"><summary class="btn sm ghost">More ▾</summary>
-        <div class="more-pop">
-          <a href="#create">Create a new prompt</a>
-          <a href="#knowledge">Knowledge base</a>
-          <a href="#modules">Module library</a>
-          <a href="#library">Block library</a>
-          <a href="#overview">How it works</a>
-        </div>
-      </details>
-      <div class="userbox"><span class="ai-state" id="aiState"><span class="dot"></span><span>…</span></span><span id="who"></span><button class="btn sm ghost" id="logout">Sign out</button></div>
+<div id="shell" class="shell" hidden>
+  <aside class="side">
+    <a class="brand" href="#agents"><svg width="28" height="28" viewBox="0 0 28 28" aria-hidden="true"><rect width="28" height="28" rx="8" fill="var(--accent)"/><g stroke="var(--accent-ink)" stroke-width="2" stroke-linecap="round"><path d="M7 14v0M10.5 10v8M14 7v14M17.5 11v6M21 13v2"/></g></svg><div><b>Prompt Builder</b><small>Kollect voice agents</small></div></a>
+    <nav class="nav" id="tabs" aria-label="Sections">
+      <a href="#agents" data-also="improve compare"><svg class="ni" viewBox="0 0 20 20" aria-hidden="true"><path d="M4 5h12M4 10h12M4 15h8"/></svg><span>Agents</span></a>
+      <a href="#approvals"><svg class="ni" viewBox="0 0 20 20" aria-hidden="true"><path d="M5 10.5l3 3 7-7"/></svg><span>Approvals</span><span class="badge" id="apprCount" hidden></span></a>
+      <a href="#create"><svg class="ni" viewBox="0 0 20 20" aria-hidden="true"><path d="M10 4v12M4 10h12"/></svg><span>New prompt</span></a>
+      <a href="#modules" data-also="module"><svg class="ni" viewBox="0 0 20 20" aria-hidden="true"><path d="M4 4h5v5H4zM11 4h5v5h-5zM4 11h5v5H4zM11 11h5v5h-5z"/></svg><span>Module library</span></a>
+      <a href="#knowledge"><svg class="ni" viewBox="0 0 20 20" aria-hidden="true"><path d="M5 4h8l2 2v10H5zM8 9h5M8 12h5"/></svg><span>Knowledge base</span></a>
+      <div class="nav-h">Reference</div>
+      <a href="#library" class="sub"><svg class="ni" viewBox="0 0 20 20" aria-hidden="true"><path d="M4 6h12M4 10h12M4 14h12"/></svg><span>Block library</span></a>
+      <a href="#overview" class="sub"><svg class="ni" viewBox="0 0 20 20" aria-hidden="true"><path d="M10 16v-5M10 7v.5M10 3a7 7 0 100 14 7 7 0 000-14z"/></svg><span>How it works</span></a>
+    </nav>
+    <div class="side-foot">
+      <span class="ai-state" id="aiState"><span class="dot"></span><span>…</span></span>
+      <div class="me"><span id="who"></span><button class="btn sm ghost" id="logout">Sign out</button></div>
     </div>
-  </header>
+  </aside>
   <main id="app"></main>
 </div>
 <div id="modal" class="modal" hidden></div>

@@ -15,6 +15,9 @@ module.exports = {
   port: Number(process.env.PORT || 3002),
   databaseUrl: process.env.DATABASE_URL || '',
   sessionSecret: process.env.SESSION_SECRET || 'dev-only-secret-change-me',
+  // The FDE / GTM engineer who builds an agent also reviews and approves it. Set SELF_APPROVE=false to
+  // require a second person (the author then can't approve their own version or module).
+  selfApprove: process.env.SELF_APPROVE !== 'false',
   users: parseUsers(process.env.BUILDER_USERS),
   // Claude Sonnet 5.5 on the team's AWS Bedrock (ap-south-1), via a Bedrock API key. Requests are
   // served from AWS regions worldwide (global profile): don't send data that must stay in India.
@@ -38,5 +41,11 @@ module.exports = {
   sarvamPush: process.env.SARVAM_PROMPT_PUSH || 'manual',
   // Reading live instructions from Sarvam (org and workspace ids from the Sarvam URL). The login token is pasted in the UI.
   // apiKey: the Voice Agents API key. Used for calls, transcripts and recordings (see lib/sarvamRest.js); it can't read prompts.
+  // Module library in the GitHub repo. A fine-grained token with Contents: read and write on this repo.
+  github: {
+    token: process.env.GITHUB_TOKEN || '',
+    repo: process.env.GITHUB_REPO || '',              // owner/name, e.g. VianShah/Prompt_Builder
+    branch: process.env.GITHUB_LIBRARY_BRANCH || 'module-library',
+  },
   sarvam: { orgId: process.env.SARVAM_ORG_ID || '', workspaceId: process.env.SARVAM_WORKSPACE_ID || '', apiKey: process.env.SARVAM_API_KEY || '' },
 };

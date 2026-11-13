@@ -4,8 +4,9 @@ A web app, run as its own Render service, for improving the collections voice ag
 
 - **Refresh** the agent list from your Sarvam workspace and **load** each agent's committed prompt (regrouped into 13 standard sections, never reworded).
 - **Review calls**: every call per agent by date, with transcript and synced audio. Flag what went wrong and what should have happened.
-- **Improve** a prompt from those flags or from UAT/client feedback. The AI finds the cause and drafts the fix; many fixes go into one draft.
-- **Approve** versions (the author can't approve their own), push to a UAT agent first, then promote to the live agent.
+- **Improve** a prompt from those flags or from UAT, founder or client feedback (text, Excel, CSV or Word). Each item is mapped to the section and block that causes it, then fixed with an AI draft or by hand.
+- **Review and approve** versions. The review lists every change by section and line, marked Added, Removed, Modified or Replaced. The engineer who built the agent approves it (`SELF_APPROVE=true`, the default); set it to `false` to require a second person.
+- **Take it live.** **Push and go live** writes only the changed passages into the agent through Sarvam's MCP server (dry run first) and commits a new Sarvam version. Push to the UAT agent first if one is linked. **Roll back** commits an older version's prompt again as a new Sarvam version.
 - **Create** agents by cloning, or from the block and module library.
 
 ## How it connects
@@ -18,7 +19,7 @@ Prompt Builder (this service)
    └── Claude (Bedrock) → GLM → Gemini   mapping, fix drafts, reviews
 ```
 
-There is no Kollect connection. Going live means the builder writes the changed passages into the Sarvam agent and commits a new version; the agent runs its newest committed version. To go back to an older version, push its text again as a new version.
+There is no Kollect connection. Going live commits a new Sarvam version, and the agent runs its newest committed version. Roll back commits an older version's prompt again as a new version.
 
 ## Deploy on Render
 
@@ -48,6 +49,15 @@ Set `SARVAM_API_KEY` (Sarvam > Voice Agents > Settings > API key) on Render. The
 
 After signing in, **Load all prompts** on the Agents page copies every agent's committed prompt in the background, with a progress bar. It stops cleanly if the login lapses.
 
+### Module library (in git)
+
+Modules are JSON files in `library/modules/<MODULE-ID>/<version>.json`, not in the database.
+
+- **On Render:** set `GITHUB_TOKEN` (fine-grained token, *Contents: read and write* on this repo only) and `GITHUB_REPO`. The builder reads the library from the `module-library` branch at start, and every module save, approval or delete is a commit there. It's a separate branch so a module save doesn't redeploy the service. Merge `module-library` into `main` whenever you want the library in `main`.
+- **On your computer:** leave `GITHUB_TOKEN` empty. Modules are written to `library/modules/` in this folder; commit them like any other change.
+- Modules saved in the database before this change are copied into the library once, the first time it starts empty.
+- If GitHub can't be reached at start, the builder still runs, but the Modules page shows the error and saving modules is refused until a restart.
+
 ### Copy your local data to Render
 
 Render's database starts empty. To bring over your local prompts, versions, feedback, tests and modules (never the Sarvam login):
@@ -63,7 +73,8 @@ Nothing deployed is overwritten unless you add `--replace` (see the top of `scri
 
 1. Sign in to Sarvam, click **Refresh**, then **Load all prompts**.
 2. **Calls**: pick an agent and dates, flag mistakes, then use the fix flow to draft one combined fix.
-3. **Approvals**: an approver reviews the change and approves. Push to UAT, test, then push to live.
+3. **Approvals**: open **See changes**, read the change list, approve, then **Push and go live** (UAT first if linked).
+4. If something goes wrong, click **Roll back to this** on the previous live version. It commits that version's prompt again in Sarvam.
 
 ## Local development
 
@@ -83,7 +94,8 @@ server/
   auth.js             Signed-cookie sessions; roles editor/approver/admin
   lib/sarvam.js       Sarvam MCP client (prompts, clone, commit)
   lib/sarvamRest.js   Sarvam analytics REST (calls, transcripts, recordings)
-  lib/llm.js          GLM 5 → Gemini JSON completions with fallback
+  lib/llm.js          Claude (Bedrock) → GLM 5 → Gemini JSON completions with fallback (LLM_ORDER)
+  lib/libraryStore.js Module library as JSON files in git (GitHub API on Render, local files otherwise)
   lib/aiTasks.js      Prompts for mapping, drafting, review, KB, import grouping (+ rule fallbacks)
   routes/agents.js    Refresh, load prompts, calls, import
   routes/prompts.js   Prompts, versions, approvals, go-live, push, audit

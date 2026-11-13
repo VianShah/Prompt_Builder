@@ -3,6 +3,7 @@ const db = require('../db');
 const pushLib = require('../lib/sarvamPush');
 const core = require('../../shared/promptcore');
 const { can } = require('../auth');
+const config = require('../config');
 const ai = require('../lib/aiTasks');
 const { uid, now, h, fail, audit, bump } = require('../lib/util');
 
@@ -281,7 +282,9 @@ r.post('/versions/:vid/approve', h(async (req, res) => {
   if (!can(req.user, 'approve')) throw fail(403, 'Only approvers can approve.');
   const v = await loadVersion(req.params.vid);
   if (v.status !== 'pending') throw fail(409, 'Only versions waiting for approval can be approved.');
-  if (v.by === req.user.email && req.user.role !== 'admin') throw fail(409, 'Someone other than the author must approve this version.');
+  // With a second approver required, nobody who wrote or edited the draft may approve it (admins excepted).
+  const authors = [v.by, ...(v.editedBy || [])];
+  if (!config.selfApprove && authors.includes(req.user.email) && req.user.role !== 'admin') throw fail(409, 'Someone who did not write or edit this version must approve it.');
   v.status = 'approved'; v.approvedBy = req.user.email; v.approvedAt = now(); step(v, req.user, 'approved', req.body && req.body.note);
   await db.put('versions', v); await audit(req.user, 'version.approve', { version: v.id });
   res.json(strip(v));
@@ -333,7 +336,7 @@ r.post('/versions/:vid/go-live', h(async (req, res) => {
 // Apply a version's own edits onto newer text. An edit whose result is already there (the same fix
 // reached Sarvam another way) counts as done, not as a conflict.
 function applyOwn(text, own) {
-  const flat = x => String(x).replace(/s+/g, ' ').trim();
+  const flat = x => String(x).replace(/\s+/g, ' ').trim();
   const pending = own.filter(e => !(e.new_text.trim() && flat(text).includes(flat(e.new_text))));
   const out = ai.applyEdits(text, pending);
   return { text: out.text, failed: out.failed, already: own.length - pending.length };
@@ -504,8 +507,44 @@ r.post('/versions/:vid/push', h(async (req, res) => {
 // Roll back: Sarvam keeps no "which version is live" switch for the builder to flip, so going back means
 // pushing the earlier version's text as a new Sarvam version. This only explains that; the UI offers it as "Push this again".
 r.post('/versions/:vid/rollback', h(async (req, res) => {
-  throw fail(409, 'To go back to an older version, push its text again as a new version (Sarvam has no switch to re-activate an old one).');
+  if (!can(req.user, 'rollback')) throw fail(403, 'Only approvers and admins can roll back.');
+  const v = await loadVersion(req.params.vid);
+  if (!v.sarvamVersion || !['superseded', 'rolled_back'].includes(v.status)) throw fail(409, 'Only a version that was live before can be rolled back to.');
+  const p = await loadPrompt(v.promptId);
+  const agent = p.agentId ? await db.get('agents', p.agentId) : null;
+  if (!agent || !agent.sarvamAppId) throw fail(409, 'This prompt is not linked to a Sarvam agent, so there is nothing to roll back.');
+  // Sarvam only: commit the old version's prompt text again as a new Sarvam version, so the newest
+  // version (what calls use when nothing is pinned) is the old prompt. Prompt text only; greeting and
+  // settings stay as they are now.
+  const out = await recommit(agent, v, req.user);
+  v.sarvamText = out.text; v.sourceChunks = null;
+  v.rolledBackFrom = { sarvamVersion: Number(v.sarvamVersion), at: now(), by: req.user.email };
+  await markLive(p, v, req.user, out.version, 'rollback');
+  await db.put('agents', { ...(await db.get('agents', agent.id)), sarvamPromptHash: out.hash, sarvamPulledAt: now(), sarvamPullError: null });
+  await audit(req.user, 'version.rollback', { version: v.id, from: v.rolledBackFrom.sarvamVersion, sarvamVersion: out.version, recommitted: true });
+  res.json({ ok: true, recommitted: true, sarvamVersion: out.version, from: v.rolledBackFrom.sarvamVersion });
 }));
+
+// Commit an earlier Sarvam version's prompt text as a new Sarvam version. Refuses when Sarvam's draft
+// holds edits nobody committed (they would go live unreviewed), and checks the committed text after.
+async function recommit(agent, v, user) {
+  const sarvam = require('../lib/sarvam');
+  const appId = agent.sarvamAppId;
+  const committed = await sarvam.committedVersions(appId);
+  const newest = committed[committed.length - 1];
+  if (!newest) throw fail(409, 'Sarvam has no committed version of this agent.');
+  const [old, top, draft] = await Promise.all([sarvam.promptText(appId, v.sarvamVersion), sarvam.promptText(appId, newest), sarvam.promptText(appId, null)]);
+  if (old.hash === top.hash) return { version: newest, text: top.text, hash: top.hash }; // already the newest text
+  if (draft.hash !== top.hash) throw fail(409, `Sarvam's draft for ${agent.name} has edits nobody committed. Commit or discard them in Sarvam, then roll back again.`, 'draft_dirty');
+  const edits = pushLib.textEdits(draft.text, old.text);
+  await sarvam.editDraft(appId, edits, true);
+  await sarvam.editDraft(appId, edits, false);
+  const version = await sarvam.commit(appId, `Prompt Builder rollback: prompt of Sarvam v${v.sarvamVersion} (builder v${v.v}) by ${user.email}`);
+  const after = await sarvam.promptText(appId, version);
+  const norm = s => s.replace(/\s+/g, ' ').trim();
+  if (norm(after.text) !== norm(old.text)) throw fail(502, `Committed as Sarvam v${version}, but its text differs from v${v.sarvamVersion}. Check the agent in Sarvam.`, 'sarvam_edit');
+  return { version, text: after.text, hash: after.hash };
+}
 
 r.get('/approvals', h(async (req, res) => {
   const [versions, prompts] = await Promise.all([db.list('versions', v => ['pending', 'approved'].includes(v.status)), db.list('prompts')]);

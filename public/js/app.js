@@ -55,25 +55,44 @@ const isHead = l => /^\s*(#{1,6}\s+\S|\*\*[^*].*\*\*\s*:?\s*$|\\\*\\\*.+\\\*\\\*
 // Groups a line diff into changes, each with its context line above/below and the nearest heading.
 function cvHunks(a, b) {
   const ops = lineDiff(String(a || "").replace(/\r/g, ""), String(b || "").replace(/\r/g, ""));
-  const hs = []; let cur = null, head = "", lastCtx = null;
+  // la / lb: line numbers (1-based) in the old and new text, so each change says where it is.
+  const hs = []; let cur = null, head = "", lastCtx = null, la = 0, lb = 0;
   ops.forEach(([k, t], idx) => {
-    if (k === "c") { if (cur) { cur.post = t; hs.push(cur); cur = null; } if (isHead(t)) head = t; lastCtx = t; return; }
-    if (!cur) cur = { del: [], add: [], pre: lastCtx, head, start: idx };
-    (k === "d" ? cur.del : cur.add).push(t);
-    if (k === "d" && isHead(t)) head = t;
+    if (k === "c") { la++; lb++; if (cur) { cur.post = t; hs.push(cur); cur = null; } if (isHead(t)) head = t; lastCtx = t; return; }
+    if (!cur) cur = { del: [], add: [], pre: lastCtx, head, start: idx, aLine: la + 1, bLine: lb + 1 };
+    if (k === "d") { la++; cur.del.push(t); if (isHead(t)) head = t; } else { lb++; cur.add.push(t); }
   });
   if (cur) hs.push(cur);
-  return { ops, hunks: hs.map(h => ({ ...h, kind: h.del.some(x => x.trim()) && h.add.some(x => x.trim()) ? "changed" : h.add.some(x => x.trim()) ? "new" : "removed" })).filter(h => h.del.some(x => x.trim()) || h.add.some(x => x.trim())) };
+  return { ops, hunks: hs.map(h => {
+    const kind = h.del.some(x => x.trim()) && h.add.some(x => x.trim()) ? "changed" : h.add.some(x => x.trim()) ? "new" : "removed";
+    return { ...h, kind, label: kind === "new" ? "Added" : kind === "removed" ? "Removed" : cvSimilar(h.del.join(" "), h.add.join(" ")) >= 0.5 ? "Modified" : "Replaced" };
+  }).filter(h => h.del.some(x => x.trim()) || h.add.some(x => x.trim())) };
 }
+// Share of words kept between before and after (0 = all new, 1 = same). "Modified" keeps at least half.
+function cvSimilar(a, b) {
+  const wa = String(a).toLowerCase().match(/[\p{L}\p{N}{}_]+/gu) || [], wb = String(b).toLowerCase().match(/[\p{L}\p{N}{}_]+/gu) || [];
+  if (!wa.length || !wb.length) return 0;
+  const pool = new Map(); wa.forEach(w => pool.set(w, (pool.get(w) || 0) + 1));
+  let common = 0; wb.forEach(w => { const n = pool.get(w); if (n) { common++; pool.set(w, n - 1); } });
+  return common / Math.max(wa.length, wb.length);
+}
+// "line 12" / "lines 12–14" in the old text and the new text.
+function cvLines(h) {
+  const r = (start, n) => n <= 1 ? `line ${start}` : `lines ${start}–${start + n - 1}`;
+  if (h.kind === "new") return `new ${r(h.bLine, h.add.length)}`;
+  if (h.kind === "removed") return `was ${r(h.aLine, h.del.length)}`;
+  return `${r(h.aLine, h.del.length)} → ${r(h.bLine, h.add.length)}`;
+}
+const CV_KLASS = { Added: "new", Removed: "removed", Modified: "changed", Replaced: "replaced" };
 const cvClip = (lines, max = 24) => lines.length > max ? [...lines.slice(0, max), `… ${lines.length - max} more line${lines.length - max === 1 ? "" : "s"}`] : lines;
 const cvHeadText = h => String(h || "").replace(/[#*\\_]+/g, "").replace(/\s+/g, " ").trim().slice(0, 80);
 function diffHtml(a, b, opts = {}) {
   const { hunks } = cvHunks(a, b);
   if (!hunks.length) return `<div class="cv"><div class="cv-bar"><span class="muted">No changes</span></div></div>`;
   const mode = R.diffMode || "split";
-  const count = k => hunks.filter(h => h.kind === k).length;
+  const count = l => hunks.filter(h => h.label === l).length;
   const dChars = String(b || "").replace(/\r/g, "").length - String(a || "").replace(/\r/g, "").length;
-  const bar = `<div class="cv-bar"><span>${[["changed", "changed"], ["new", "new"], ["removed", "removed"]].filter(([k]) => count(k)).map(([k, l]) => `<span class="cv-k ${k}">${count(k)} ${l}</span>`).join(" ")} <span class="muted">· ${delta(dChars)} characters</span></span>
+  const bar = `<div class="cv-bar"><span>${["Modified", "Replaced", "Added", "Removed"].filter(l => count(l)).map(l => `<span class="cv-k ${CV_KLASS[l]}">${count(l)} ${l.toLowerCase()}</span>`).join(" ")} <span class="muted">· ${delta(dChars)} characters</span></span>
     <span class="row" style="gap:8px"><label class="check small"><input type="checkbox" data-act-check="cv-full" ${R.cvFull ? "checked" : ""}> Show full text</label><span class="seg cv-mode"><button type="button" data-act="diff-mode" data-m="split" aria-pressed="${mode === "split"}">Side by side</button><button type="button" data-act="diff-mode" data-m="inline" aria-pressed="${mode === "inline"}">Inline</button></span></span></div>`;
   const ctx = t => t != null && t.trim() ? `<div class="cv-ctx">${esc(t.length > 180 ? t.slice(0, 180) + "…" : t)}</div>` : "";
   const cards = hunks.map((h, hi) => {
@@ -83,7 +102,7 @@ function diffHtml(a, b, opts = {}) {
     const editing = key && R.hunkEdit === key;
     const where = cvHeadText(h.head);
     const actions = opts.edit && !editing ? `<span class="cv-act">${h.kind !== "removed" ? `<button class="btn sm ghost" data-act="hunk-edit" data-k="${esc(key)}">✎ Edit</button>` : ""}<button class="btn sm ghost" data-act="hunk-undo" data-k="${esc(key)}" title="Drop just this part of the change">↺ Undo</button></span>` : "";
-    const head = `<div class="cv-head"><span class="cv-k ${h.kind}">${h.kind === "changed" ? "Changed" : h.kind === "new" ? "New" : "Removed"}</span>${where ? `<span class="small muted">under “${esc(where)}”</span>` : ""}<span class="small muted">${delta(h.add.join("\n").length - h.del.join("\n").length)}</span>${actions}</div>`;
+    const head = `<div class="cv-head"${opts.anchor ? ` id="${esc(opts.anchor)}-${hi}"` : ""}><span class="cv-k ${CV_KLASS[h.label]}">${h.label}</span><span class="small mono cv-ln">${opts.section ? esc(opts.section) + " · " : ""}${cvLines(h)}</span>${where ? `<span class="small muted">under “${esc(where)}”</span>` : ""}<span class="small muted">${delta(h.add.join("\n").length - h.del.join("\n").length)}</span>${actions}</div>`;
     if (editing) return `<div class="cv-card editing">${head}<div class="cv-edit"><div class="small muted">Edit what this part should say. Everything else in the fix stays as it is.</div>
       <textarea id="hunk-text" rows="${Math.min(14, Math.max(3, h.add.length + 1))}" class="mono">${esc(h.add.join("\n"))}</textarea>
       <div class="row" style="gap:6px"><button class="btn sm primary" data-act="hunk-save" data-k="${esc(key)}">Save this part</button><button class="btn sm" data-act="hunk-cancel">Cancel</button></div></div></div>`;
@@ -168,7 +187,7 @@ const aiOn = () => R.health && R.health.llm && R.health.llm.length > 0;
 function showLogin() { $("#shell").hidden = true; $("#login").hidden = false; }
 $("#loginForm").addEventListener("submit", async e => {
   e.preventDefault(); $("#lMsg").textContent = "";
-  try { const r = await api("POST", "/login", { email: $("#lEmail").value, password: $("#lPass").value }); R.me = r.user; boot(); }
+  try { const r = await api("POST", "/login", { email: $("#lEmail").value, password: $("#lPass").value }); R.me = r.user; R.selfApprove = r.selfApprove !== false; boot(); }
   catch (err) { $("#lMsg").textContent = err.message; }
 });
 $("#logout").addEventListener("click", async () => { await api("POST", "/logout").catch(() => { }); location.reload(); });
@@ -208,7 +227,7 @@ const ROUTES = {
   knowledge: { view: viewKnowledge, load: null },
   compare: { view: viewCompare, load: async () => { await Promise.all([loadAgents(true), loadPrompts(true)]); R.cmpData = {}; cmpLoad(); } },
   library: { view: viewLibrary, load: () => api("GET", "/core-changes").then(r => R.core = r.items) },
-  modules: { view: viewModules, load: async () => { await Promise.all([loadAgents(true), loadPrompts(true)]); R.mods = (await api("GET", "/modules")).items; if (R.modId) await loadMod(R.modId); } }
+  modules: { view: viewModules, load: async () => { await Promise.all([loadAgents(true), loadPrompts(true)]); const mr = await api("GET", "/modules"); R.mods = mr.items; R.lib = mr.library; if (R.modId) await loadMod(R.modId); } }
 };
 const route = () => { const h = location.hash.slice(1).split("?")[0]; return ROUTES[h] ? h : "agents"; };
 function updateBadge() {
@@ -219,7 +238,6 @@ function render() {
   const a = document.activeElement, fid = a && a.id; let ss = null, se = null; try { ss = a.selectionStart; se = a.selectionEnd; } catch (e) { }
   const r = route();
   $$("#tabs a").forEach(x => x.setAttribute("aria-current", x.getAttribute("href") === "#" + r || (x.dataset.also || "").split(" ").includes(r) ? "page" : "false"));
-  $("#moreMenu").open = false;
   updateBadge();
   const audio = $("#callAudio");
   $("#app").innerHTML = ROUTES[r].view();
@@ -285,14 +303,19 @@ function viewAgents() {
 
   const sOn = R.sarvam && R.sarvam.hasToken && !R.sarvam.expired;
   return `
-  <div class="view-head"><div><h1>Agents</h1><p>Every agent in your Sarvam workspace${ag.length ? ` (${ag.length})` : ""}. Click one to see its prompt, its calls and to make changes.</p></div>
-  <div class="row">${canDo("approve") && R.sarvam && R.sarvam.hasToken ? `<button class="btn" data-act="clone-modal">+ New agent</button>` : ""}<a class="btn" href="#compare">⇄ Compare agents</a>${canDo("edit") && sOn ? `<button class="btn" data-act="pull-all" ${R.pullJob && R.pullJob.state === "running" ? "disabled" : ""} title="Reads every agent's prompt and versions from Sarvam, including agents the builder hasn't opened yet">⇣ Load all prompts</button>` : ""}<button class="btn" data-act="sync" ${kOn || sOn ? "" : "disabled"} title="Reads every agent and its newest committed version from Sarvam, and talk time and calls from Kollect">↻ Refresh</button></div></div>
+  <div class="view-head"><div><h1>Agents</h1><p>${ag.length ? `${ag.length} agent${ag.length === 1 ? "" : "s"} in your Sarvam workspace. ` : ""}Open one to read its prompt, review calls and make changes.</p></div>
+  <div class="row" style="gap:8px"><button class="btn" data-act="sync" ${sOn ? "" : "disabled"} title="Reads every agent and its newest committed version from Sarvam, and talk time and calls from Kollect">↻ Refresh</button>
+   <details class="more"><summary class="btn" aria-label="More actions">⋯</summary><div class="more-pop">
+     <a href="#compare">Compare two agents</a>
+     ${canDo("edit") && sOn ? `<a href="#" data-act="pull-all" title="Reads every agent's prompt and versions from Sarvam, including agents the builder hasn't opened yet">Load all prompts from Sarvam</a>` : ""}
+     <a href="#create">Write a prompt with the wizard</a></div></details>
+   ${canDo("approve") && R.sarvam && R.sarvam.hasToken ? `<button class="btn primary" data-act="clone-modal">+ New agent</button>` : `<a class="btn primary" href="#create">+ New prompt</a>`}</div></div>
   ${sarvamPanel()}
   ${pullBar()}
   ${R.syncNote ? `<div class="notice"><span>${R.syncNote}</span><a href="#" class="small" data-act="sync-note-x">dismiss</a></div>` : ""}
 
   ${ag.length ? `<div class="alist">${[...ag].map(agentCard).join("")}</div>` : `<div class="empty">No agents yet. ${sOn ? "Click Refresh." : "Connect Sarvam first."}</div>`}
-  ${(() => { const other = (R.prompts || []).filter(p => !p.agentId); return other.length ? `<h2 style="margin:24px 0 8px">Prompts not linked to an agent</h2><div class="alist">${other.map(p => `<a class="arow" href="#improve" data-act="open-prompt" data-id="${p.id}"><div class="nm"><b>${esc(p.name)}</b><div class="small muted">${p.latest ? "v" + esc(p.latest.v) : ""}</div></div><div>${p.latest ? statusPill(p.latest.status) : ""}</div><div></div></a>`).join("")}</div>` : ""; })()}`;
+  ${(() => { const other = (R.prompts || []).filter(p => !p.agentId); return other.length ? `<h2 class="group">Prompts not linked to an agent</h2><div class="alist">${other.map(p => `<a class="arow" href="#improve" data-act="open-prompt" data-id="${p.id}"><div class="nm"><b>${esc(p.name)}</b><div class="small muted">${p.latest ? "v" + esc(p.latest.v) : ""}</div></div><div>${p.latest ? statusPill(p.latest.status) : ""}</div><div></div></a>`).join("")}</div>` : ""; })()}`;
 }
 // "Load all prompts": progress while it runs in the background, and what happened when it's done.
 function pullBar() {
@@ -699,7 +722,7 @@ function viewImprove() {
   const tab = R.tab || "prompt";
   const nCalls = R.calls && R.calls.agentId === (agent || {}).id && R.calls.items ? callsShown(R.calls).length : null;
   const nFix = (R.feedback || []).filter(i => i.status === "mapped").length;
-  const tabs = `<div class="subtabs" role="tablist">${TABS.filter(([k]) => !["calls", "settings"].includes(k) || agent).map(([k, l]) => `<button data-act="tab" data-t="${k}" aria-pressed="${tab === k}">${l}${k === "calls" && nCalls != null ? ` (${nCalls})` : ""}${k === "changes" && nFix ? ` (${nFix} to fix)` : ""}</button>`).join("")}</div>`;
+  const tabs = `<div class="subtabs" role="tablist">${TABS.filter(([k]) => !["calls", "settings"].includes(k) || agent).map(([k, l]) => `<button data-act="tab" data-t="${k}" aria-pressed="${tab === k}">${l}${k === "calls" && nCalls != null ? `<span class="n">${nCalls}</span>` : ""}${k === "changes" && nFix ? `<span class="n hot" title="${nFix} to fix">${nFix}</span>` : ""}</button>`).join("")}</div>`;
   const ahead = agent && agent.sarvamDraftAhead ? `<div class="notice"><span><b>Sarvam has edits that aren't committed</b> (${agent.sarvamDraftAhead.chars >= 0 ? "+" : ""}${agent.sarvamDraftAhead.chars} characters). Calls don't use them, so they're not shown here. Commit them in Sarvam, then Refresh, to bring them in.</span></div>` : "";
   const body = tab === "calls" ? callsTab(agent) : tab === "changes" ? changesTab(cur) : tab === "history" ? historyTab(cur) : tab === "settings" ? settingsTab(cur, agent) : promptTab(cur);
   const lvv = liveOf(cur), shown = lvv && lvv.sarvamVersion ? Number(lvv.sarvamVersion) : null;
@@ -736,6 +759,12 @@ function mdRender(text) {
   close();
   return out.join("");
 }
+// Give the prompt's headings ids and list them, for the outline beside the prompt.
+function withToc(html) {
+  const toc = []; let i = 0;
+  const out = html.replace(/<h([23])>([\s\S]*?)<\/h\1>/g, (m, l, inner) => { const id = `toc-${i++}`; toc.push({ id, l, t: inner.replace(/<[^>]+>/g, "") }); return `<h${l} id="${id}">${inner}</h${l}>`; });
+  return { html: out, toc: toc.filter(t => t.t.trim()).slice(0, 80) };
+}
 const greetingNow = () => (R.sv && (R.sv.greeting || (R.sv.meta && R.sv.meta.greeting))) || "";
 function promptTab(cur) {
   const p = cur.prompt, latest = latestOf(cur);
@@ -746,9 +775,10 @@ function promptTab(cur) {
   const live = liveOf(cur);
   const len = ` · <b>${fmtN(latest.chars)}</b> characters${latest.greetingChars ? ` + ${fmtN(latest.greetingChars)} in the greeting` : ""}${live && live.id !== latest.id && live.chars != null ? ` (${delta(latest.chars - live.chars)} vs live v${esc(live.v)})` : ""}`;
   const note = (R.sv && R.sv.text ? (R.sv.exact ? `Exactly as in Sarvam v${esc(R.sv.liveSarvamVersion)}` : `v${esc(latest.v)} · how it will read in Sarvam once pushed`) : `v${esc(latest.v)}`) + len;
+  const tocMd = R.viewSections || R.viewRaw ? { html: "", toc: [] } : withToc(mdRender(text));
   const body = R.viewSections ? `<pre class="prompt" style="max-height:none">${esc(mdOf(p.cfg, latest))}</pre>`
     : R.viewRaw ? `<pre class="prompt" style="max-height:none">${esc(text)}</pre>`
-    : `<div class="md">${mdRender(text)}</div>`;
+    : `<div class="md">${tocMd.html}</div>`;
   return `<div class="stack">
    <div class="row" style="justify-content:space-between"><span class="small muted">${note}</span>
     <div class="row" style="gap:6px">
@@ -761,13 +791,14 @@ function promptTab(cur) {
      </div></details>
      <button class="btn sm" data-act="copy-prompt">Copy</button><button class="btn sm" data-act="dl-prompt">Download</button></div></div>
    ${R.opt && R.opt.promptId === p.id ? optPanel(cur) : ""}
+   <div class="${tocMd.toc.length > 2 ? "doc-wrap" : ""}">${tocMd.toc.length > 2 ? `<nav class="toc" aria-label="Prompt outline"><div class="toc-h">On this page</div>${tocMd.toc.map(t => `<a href="#" class="l${t.l}" data-act="jump" data-to="${t.id}">${t.t}</a>`).join("")}</nav>` : ""}
    <div class="doc">
     ${cur.agent || greeting ? `<div class="doc-label">Greeting${R.sv && R.sv.greetingChanged ? ` <span class="chip warn">changed in this version</span>` : ""}</div>
     <div class="greet">${greeting ? mdInline(greeting) : `<span class="muted">No greeting set</span>`}</div>
     ${translations.length && !(R.sv && R.sv.greetingChanged) ? `<details class="trans"><summary class="btn sm">Translations (${translations.length})</summary><div class="stack" style="gap:6px;margin-top:8px">${translations.map(([l, t]) => `<div><span class="chip">${esc(l)}</span> ${mdInline(t)}</div>`).join("")}</div></details>` : R.sv && R.sv.greetingChanged ? `<div class="small muted">Sarvam regenerates the translations from this when it's pushed.</div>` : ""}` : ""}
     <div class="doc-label" style="margin-top:22px">Instructions</div>
     ${body}
-   </div>
+   </div></div>
    ${sarvamAgentPanel(cur)}</div>`;
 }
 // Manual editing: the whole greeting and instructions, exactly as they will be in Sarvam.
@@ -968,27 +999,31 @@ function historyTab(cur) {
   return `<div class="tbl-wrap"><table><thead><tr><th>Version</th><th>Status</th><th>When</th><th>By</th><th>Length</th><th>Change</th><th></th></tr></thead><tbody>
    ${[...cur.versions].reverse().map(v => { const i = cur.versions.indexOf(v), prev = cur.versions[i - 1]; return `<tr><td class="num"><b>v${esc(v.v)}</b>${v.sarvamVersion ? `<div class="small muted">Sarvam v${esc(v.sarvamVersion)}</div>` : ""}</td><td>${statusPill(v.status)}</td><td class="num muted">${fmtDate(v.updatedAt && v.rev ? v.updatedAt : v.createdAt)}</td><td class="muted small">${esc(v.by)}</td>
      <td class="num small">${fmtN(v.chars)}${prev && prev.chars != null && v.chars != null ? `<div>${delta(v.chars - prev.chars)}</div>` : ""}</td><td>${esc(v.note)}${(v.feedbackIds || []).length > 1 ? `<div class="small muted">${v.feedbackIds.length} fixes</div>` : ""}</td>
-     <td><div class="row" style="gap:4px;flex-wrap:nowrap">${i > 0 ? `<button class="btn sm" data-act="cmp" data-i="${i}">${R.cmpOpen === i ? "Hide" : "Compare"}</button>` : ""}</div></td></tr>${R.cmpOpen === i ? `<tr><td colspan="7">${versionDiff(cur.versions[i - 1], v)}</td></tr>` : ""}`; }).join("")}
+     <td><div class="row" style="gap:4px;flex-wrap:nowrap">${i > 0 ? `<button class="btn sm" data-act="cmp" data-i="${i}">${R.cmpOpen === i ? "Hide" : "Compare"}</button>` : ""}${["superseded", "rolled_back"].includes(v.status) && v.sarvamVersion && canDo("rollback") ? `<button class="btn sm" data-act="rollback" data-vid="${v.id}">Roll back to this</button>` : ""}</div></td></tr>${R.cmpOpen === i ? `<tr><td colspan="7">${versionDiff(cur.versions[i - 1], v)}</td></tr>` : ""}`; }).join("")}
    </tbody></table></div>`;
 }
+const FB_ORDER = { mapped: 0, new: 1, applied: 2, dismissed: 3 };
 function changesTab(cur) {
   const latest = latestOf(cur);
   const items = R.feedback || [];
   const counts = { new: 0, mapped: 0, applied: 0, dismissed: 0 }; items.forEach(i => counts[i.status] = (counts[i.status] || 0) + 1);
+  const mode = R.inMode || "paste";
   return `
-  <div class="grid2" style="grid-template-columns:repeat(auto-fit,minmax(min(100%,380px),1fr))">
-   <div class="stack"><div class="panel stack">
-    <div><h2>1 · What should change?</h2><p class="small muted">Paste feedback from UAT, a call review or the client. Each line becomes one item.</p></div>
+  <div class="changes">
+   <div class="in"><div class="panel stack">
+    <div><h2>What should change?</h2></div>
+    <div class="seg" role="tablist" style="align-self:flex-start"><button type="button" data-act="in-mode" data-m="paste" aria-pressed="${mode === "paste"}">Paste feedback</button><button type="button" data-act="in-mode" data-m="call" aria-pressed="${mode === "call"}">Analyse a call</button></div>
+    ${mode === "call" ? transcriptPanel(cur, true) : `<p class="small muted">From UAT, a call review or the client. Each line becomes one item.</p>
     <label class="f">From<select id="f-src">${["Client UAT", "Founders", "Internal QA", "Call review", "Client stakeholder"].map(s => `<option ${s === (L.fbSource || "Client UAT") ? "selected" : ""}>${s}</option>`).join("")}</select></label>
     <label class="f">Paste text <span class="hint">(numbered or bulleted lists split into items)</span><textarea id="f-raw" rows="8" data-act-input="raw">${esc(L.fbRaw || "")}</textarea></label>
     <div class="dropzone" id="fbDrop">Drop an Excel, CSV, Word or text file, or <label style="color:var(--accent);cursor:pointer;text-decoration:underline">choose a file<input type="file" id="fbFile" accept=".xlsx,.xls,.csv,.docx,.txt,.md" hidden></label><div class="small" id="fbFileMsg"></div></div>
-    <div class="row"><button class="btn primary" data-act="split" ${canDo("edit") ? "" : "disabled"}>Add</button><button class="btn ghost sm" data-act="sample-fb">Try with sample feedback</button></div>
-   </div>${transcriptPanel(cur)}</div>
-   <div class="panel stack">
-    <div class="row" style="justify-content:space-between"><h2>2 · Fix each item</h2>${items.length ? `<span class="small muted">${counts.new || 0} new · ${counts.mapped || 0} to fix · ${counts.applied || 0} done</span>` : ""}</div>
+    <div class="row"><button class="btn primary" data-act="split" ${canDo("edit") ? "" : "disabled"}>Add items</button><button class="btn ghost sm" data-act="sample-fb">Try sample feedback</button></div>`}
+   </div></div>
+   <div class="stack">
+    <div class="row" style="justify-content:space-between"><h2>Items to fix</h2>${items.length ? `<span class="small muted">${counts.new || 0} new · ${counts.mapped || 0} to fix · ${counts.applied || 0} done</span>` : ""}</div>
     ${items.some(i => i.status === "new") ? `<div class="row"><button class="btn primary ai" data-act="map-all">Find where each item goes in the prompt</button></div>` : ""}
     ${counts.mapped > 1 && canDo("edit") ? `<div class="small muted">Tick the items to fix together. One new version is made with all of them, so it's approved and pushed once. <a href="#" data-act="fb-selall">Select all ${counts.mapped}</a></div>` : ""}
-    <div class="stack" style="gap:10px">${items.length ? [...items].reverse().map(it => fbCard(it, latest)).join("") : `<div class="empty">Nothing yet. Add feedback here, or flag mistakes on the <a href="#" data-act="tab" data-t="calls">Calls</a> tab.</div>`}</div>
+    <div class="stack" style="gap:10px">${items.length ? [...items].reverse().sort((x, y) => (FB_ORDER[x.status] ?? 9) - (FB_ORDER[y.status] ?? 9)).map(it => fbCard(it, latest)).join("") : `<div class="empty">Nothing yet. Add feedback here, or flag mistakes on the <a href="#" data-act="tab" data-t="calls">Calls</a> tab.</div>`}</div>
    </div>
   </div>
   ${testsPanel(cur)}
@@ -1027,13 +1062,13 @@ function optPanel(cur) {
 
 // A whole UAT call transcript, uploaded or pasted: the AI lists what went wrong, the reviewer ticks
 // the mistakes to keep, and they become feedback items that are already diagnosed.
-function transcriptPanel(cur) {
+function transcriptPanel(cur, embedded) {
   const T = R.tx && R.tx.promptId === cur.prompt.id ? R.tx : (R.tx = { promptId: cur.prompt.id, text: "", label: "", note: "", versionId: "" });
   const live = cur.versions.find(v => v.status === "live"), latest = latestOf(cur);
   const opts = [...cur.versions].reverse().slice(0, 8).map(v => `<option value="${v.id}" ${(T.versionId || (live || latest).id) === v.id ? "selected" : ""}>v${esc(v.v)} · ${esc(v.status)}${v.sarvamVersion ? ` · Sarvam v${esc(v.sarvamVersion)}` : ""}${v.uat ? " · on UAT" : ""}</option>`).join("");
   const res = T.result;
-  return `<div class="panel stack" id="txPanel">
-   <div><h2>Analyse a whole call</h2><p class="small muted">Upload or paste the transcript of a UAT call. The AI reads it against the prompt the agent had and lists everything that went wrong, with the cause in the prompt and a fix.</p></div>
+  return `<div class="${embedded ? "" : "panel "}stack" id="txPanel">
+   ${embedded ? `<p class="small muted">Upload or paste a UAT call transcript. The AI lists what went wrong, the cause in the prompt, and a fix.</p>` : `<div><h2>Analyse a whole call</h2><p class="small muted">Upload or paste the transcript of a UAT call. The AI reads it against the prompt the agent had and lists everything that went wrong, with the cause in the prompt and a fix.</p></div>`}
    <div class="fgrid"><label class="f">Call name <span class="hint">(optional)</span><input type="text" data-tx="label" value="${esc(T.label)}" placeholder="e.g. UAT call 3, 31 Nov date"></label>
     <label class="f">Prompt the agent had<select data-tx="versionId">${opts}</select></label></div>
    <div class="dropzone" id="txDrop">Drop a .txt, .docx or .md transcript, or <label style="color:var(--accent);cursor:pointer;text-decoration:underline">choose a file<input type="file" id="txFile" accept=".txt,.md,.docx,.csv,.json,.srt,.vtt" hidden></label><div class="small" id="txFileMsg">${T.file ? `Loaded ${esc(T.file)}` : ""}</div></div>
@@ -1106,44 +1141,69 @@ function sarvamAgentPanel(cur) {
     <div class="small muted">Variables and languages are changed in Sarvam. The greeting and instructions can be edited here with ✎ Edit.</div>
    </div></details>`;
 }
+// Review view: first a list of every change (section, lines, type, a short preview), then each change
+// in full with the exact words highlighted. Reviewers read the changes, not the whole long prompt.
 function versionDiff(a, b) {
-  const changed = [...new Set([...Object.keys(a.sections), ...Object.keys(b.sections)])].filter(k => (a.sections[k] || "") !== (b.sections[k] || ""));
-  return changed.length ? changed.map(k => `<div style="margin-bottom:8px"><b>${secTitle(k)}</b>${diffHtml(a.sections[k] || "", b.sections[k] || "")}</div>`).join("") : `<span class="muted">No section changes.</span>`;
+  const order = [...new Set([...(b.order || []), ...(a.order || []), ...Object.keys(a.sections), ...Object.keys(b.sections)])];
+  const changed = order.filter(k => (a.sections[k] || "") !== (b.sections[k] || ""));
+  if (!changed.length) return `<span class="muted">No section changes.</span>`;
+  const uid = "cv" + Math.random().toString(36).slice(2, 8);
+  const peek = t => { const x = t.filter(l => l.trim() && !/^<!--.*-->$/.test(l.trim())).join(" ").replace(/\s+/g, " ").trim(); return x.length > 110 ? x.slice(0, 110) + "…" : x; };
+  // A block of changed lines with as many lines before as after is listed line by line, each with its own type.
+  const perLine = h => h.kind !== "changed" || h.del.length !== h.add.length || h.del.length < 2 ? [h]
+    : h.del.map((d, i) => { const x = { ...h, del: [d], add: [h.add[i]], aLine: h.aLine + i, bLine: h.bLine + i }; return d.trim() === h.add[i].trim() ? null : { ...x, label: cvSimilar(d, h.add[i]) >= 0.5 ? "Modified" : "Replaced" }; }).filter(Boolean);
+  const rows = changed.flatMap(k => cvHunks(a.sections[k] || "", b.sections[k] || "").hunks.flatMap((h0, hi) => perLine(h0).map(h => ({ k, h, hi }))));
+  const list = `<div class="tbl-wrap cv-list"><table><thead><tr><th>Section</th><th>Where</th><th>Change</th><th>What</th></tr></thead><tbody>${rows.map(({ k, h, hi }) =>
+    `<tr><td><a href="#" data-act="cv-jump" data-to="${uid}-${esc(k)}-${hi}">${esc(secTitle(k))}</a></td><td class="mono small nowrap">${cvLines(h)}</td><td><span class="cv-k ${CV_KLASS[h.label]}">${h.label}</span></td><td class="small">${h.kind === "removed" ? `<del>${esc(peek(h.del))}</del>` : esc(peek(h.add))}</td></tr>`).join("")}</tbody></table></div>`;
+  return `<div class="small muted" style="margin-bottom:6px">${rows.length} change${rows.length === 1 ? "" : "s"} in ${changed.length} section${changed.length === 1 ? "" : "s"}. Line numbers count from the top of each section.</div>${list}` +
+    changed.map(k => `<div style="margin:12px 0 8px"><b>${secTitle(k)}</b>${diffHtml(a.sections[k] || "", b.sections[k] || "", { anchor: `${uid}-${k}`, section: secTitle(k) })}</div>`).join("");
 }
+// One feedback item. Up front: the issue, where it lands, the diagnosis and the one next action.
+// Everything else (section, scope, notes for the AI, the matched prompt lines, dismiss, delete) sits
+// under "More options", which stays open across redraws once opened.
 function fbCard(it, latest) {
-  const m = it.map, sevC = { high: "err", medium: "warn", low: "" };
+  const m = it.map;
   const ed = R.editing[it.id];
   const secOpts = latest.order.map(s => `<option value="${s}" ${m && m.section === s ? "selected" : ""}>${secTitle(s)}</option>`).join("");
   const stale = it.draft && (it.draft.before ? Object.entries(it.draft.before).some(([s, t]) => (latest.sections[s] || "") !== t) : it.draft.baseVersionId !== latest.id);
   const c = it.call, sel = R.fbSel && R.fbSel.has(it.id);
+  const mapped = it.status === "mapped", edit = canDo("edit");
+  const when = c && c.at ? esc(new Date(c.at).toLocaleString([], { day: "numeric", month: "short", hour: "numeric", minute: "2-digit" })) : "";
+  const origin = `${esc(it.source)} · ${fmtDate(it.createdAt)}${c && c.upload ? ` · uploaded transcript${c.label ? `: ${esc(c.label)}` : ""}` : c ? ` · call ${when}${c.sarvamVersion ? ` on Sarvam v${esc(c.sarvamVersion)}` : ""} · <a href="#" data-act="call-goto" data-iid="${esc(c.iid)}" data-t="${c.start ?? ""}">▶ Listen</a>` : ""}`;
+  const where = m ? `<span class="chip acc">${esc(secTitle(m.section))}</span><span class="sev ${esc(m.severity)}">${esc(m.severity)}</span>${m.cause ? `<span>· ${esc(CAUSE[m.cause] || m.cause)}</span>` : ""}<span>· ${m.scope === "shared" ? "every agent" : "this agent only"}</span>` : "";
+  const nNotes = (it.guidance || []).length;
+  const open = (R.fbMore && R.fbMore.has(it.id)) || nNotes > 0;
+  const more = mapped && edit && !ed ? `<details class="fb-more" data-fbm="${it.id}" ${open ? "open" : ""}><summary>${it.draft && !stale ? "Not quite right? Add notes for the AI, or change options" : "More options"}${nNotes ? ` · ${nNotes} note${nNotes === 1 ? "" : "s"}` : ""}</summary><div class="stack" style="gap:12px">
+     <div class="fgrid"><label class="f">Section<select id="sec-${it.id}" data-act-change="resec" data-id="${it.id}">${secOpts}</select></label>
+      <label class="f">Who it's for<select data-act-change="scope" data-id="${it.id}"><option value="client" ${m.scope !== "shared" ? "selected" : ""}>This agent only</option><option value="shared" ${m.scope === "shared" ? "selected" : ""}>Every agent</option></select></label></div>
+     ${(m.quotes || []).length ? `<div class="stack" style="gap:6px"><div class="small muted">Prompt lines the AI found responsible</div>${m.quotes.map(q => `<div class="small" style="border-left:3px solid var(--amber);background:var(--amber-soft);padding:6px 10px;border-radius:4px;white-space:pre-wrap">${mdInline(q.text)}</div>`).join("")}</div>` : ""}
+     ${nNotes ? `<div class="small"><b>Your notes</b> <span class="muted">(used in every draft)</span>${it.guidance.map((g, i) => `<div class="row" style="gap:6px;align-items:flex-start;margin-top:4px"><span style="flex:1">${i + 1}. ${g.from === "check" ? `<span class="chip">from check</span> ` : ""}${esc(g.text)} <span class="muted">· ${esc((g.by || "").split("@")[0])}, ${fmtDate(g.at)}</span></span><a href="#" data-act="gd-del" data-id="${it.id}" data-i="${i}" class="muted" title="Remove this note">✕</a></div>`).join("")}</div>` : ""}
+     <label class="f">${it.draft ? "Tell the AI what to change" : "Details for the fix"} <span class="hint">(exact wording, dates, what not to do; your notes override the diagnosis)</span>
+      <textarea id="gd-${it.id}" rows="3" data-gd="${it.id}" placeholder="e.g. Don't ask 'this date or earlier'. Suggest a date 5–6 days before theirs.">${esc((R.gd || {})[it.id] || "")}</textarea></label>
+     <div class="row" style="gap:8px"><button class="btn sm ai" data-act="draft-notes" data-id="${it.id}" ${aiOn() ? "" : "disabled"}>${(() => { const n = it.check && it.draft && it.check.draftAt === it.draft.at ? chkSel(it).size : 0; return it.draft ? (n ? `Redraft with ${n} ticked suggestion${n === 1 ? "" : "s"} + my notes` : "Redraft with my notes") : "Draft with my notes"; })()}</button></div>
+     ${m.scope === "shared" ? `<label class="check small"><input type="checkbox" id="pr-${it.id}" data-act-check="promote" data-id="${it.id}" ${it.promote !== false ? "checked" : ""}> Also log as a shared-core fix for every client</label>` : ""}
+     <div class="row small muted" style="gap:6px">${layerChip(m.layer || "L6")}${m.block ? `<code class="chip">${esc(m.block)}</code>` : ""}<span class="chip">${esc(m.type)}</span><span>mapped by ${m.via === "ai" ? esc(m.provider || "AI") : "keyword rules"}</span></div>
+     <div class="row" style="gap:12px"><a href="#" class="small" data-act="dismiss" data-id="${it.id}">Dismiss</a><a href="#" class="small" data-act="fb-del" data-id="${it.id}" style="color:var(--err)">Delete for good</a></div>
+    </div></details>` : "";
   return `<div class="fb ${it.status}">
-   ${it.status === "mapped" && canDo("edit") ? `<label class="fbsel"><input type="checkbox" data-act-check="fbsel" data-id="${it.id}" ${sel ? "checked" : ""}><span class="q" style="font-weight:500;white-space:pre-line">${esc(it.text)}</span></label>` : `<div class="q">${esc(it.text)}</div>`}
-   <div class="small muted" style="display:flex;gap:12px;justify-content:space-between;align-items:flex-start"><span>${esc(it.source)} · ${fmtDate(it.createdAt)}${c && c.upload ? ` · from an uploaded transcript${c.label ? `: ${esc(c.label)}` : ""}${m && m.diagnosedOn ? ` (read against ${esc(m.diagnosedOn)})` : ""}` : c ?` · call ${c.at ? esc(new Date(c.at).toLocaleString([], { day: "numeric", month: "short", hour: "numeric", minute: "2-digit" })) : ""}${c.sarvamVersion ? ` on Sarvam v${esc(c.sarvamVersion)}` : ""} · <a href="#" data-act="call-goto" data-iid="${esc(c.iid)}" data-t="${c.start ?? ""}">▶ listen</a>` : ""}</span>${canDo("edit") ? `<a href="#" data-act="fb-del" data-id="${it.id}" style="color:var(--err);white-space:nowrap" title="Remove this feedback for good">🗑 Delete</a>` : ""}</div>
+   ${mapped && edit ? `<label class="fbsel"><input type="checkbox" data-act-check="fbsel" data-id="${it.id}" ${sel ? "checked" : ""} title="Select to fix several together"><span class="q">${esc(it.text)}</span></label>` : `<div class="q">${esc(it.text)}</div>`}
+   <div class="where">${where}${where ? "<span>·</span>" : ""}<span>${origin}</span></div>
    ${c && c.excerpt ? `<div class="excerpt">${c.excerpt.map(x => `<div class="${(c.issues ? c.issues.some(z => z.turn === x.i) : x.i === c.turn) ? "hit" : ""}"><b>${x.role === "agent" ? "Agent" : "Customer"}:</b> ${esc(x.text.slice(0, 260))}</div>`).join("")}</div>` : ""}
-   ${m ? `<div class="meta">${m.cause ? `<span class="chip err">${esc(CAUSE[m.cause] || m.cause)}</span>` : ""}${layerChip(m.layer || "L6")}<span class="chip acc">${esc(secTitle(m.section))}</span>${m.block ? `<code class="chip">${esc(m.block)}</code>` : ""}<span class="chip ${sevC[m.severity] || ""}">${esc(m.severity)}</span><span class="chip">${esc(m.type)}</span>${it.status === "mapped" && canDo("edit") ? `<select class="chip" style="width:auto;padding:1px 6px;font-size:11px" data-act-change="scope" data-id="${it.id}" title="Who this fix is for"><option value="client" ${m.scope !== "shared" ? "selected" : ""}>This agent only</option><option value="shared" ${m.scope === "shared" ? "selected" : ""}>Every agent</option></select>` : `<span class="chip ${m.scope === "shared" ? "warn" : ""}">${m.scope === "shared" ? "Every agent" : "This agent only"}</span>`}<span class="chip src">via ${m.via === "ai" ? esc(m.provider || "AI") : "keyword rules"}</span></div>
-     ${(m.quotes || []).length ? m.quotes.map(q => `<div class="quote small" style="border-left:3px solid var(--amber);background:var(--amber-soft);padding:6px 10px;border-radius:4px;white-space:pre-wrap">${mdInline(q.text)}</div>`).join("") : ""}
-     <div class="small"><b>Why:</b> ${esc(m.diagnosis)}${m.fix ? `<br><b>Fix:</b> ${esc(m.fix)}` : ""}</div>` : ""}
-   ${it.status === "applied" ? `<div class="small" style="color:var(--ok)"><b>Applied in v${esc(it.appliedIn)}</b>${it.promoted ? " · logged as a shared-core fix" : ""}</div>` : ""}
-   ${it.status === "mapped" ? `
-     <label class="f">Section<select id="sec-${it.id}" data-act-change="resec" data-id="${it.id}">${secOpts}</select></label>
-     ${it.draft && !stale && it.draft.charsBefore != null && it.draft.charsAfter != null ? `<div class="small muted">Prompt length: ${fmtN(it.draft.charsBefore)} → <b>${fmtN(it.draft.charsAfter)}</b> characters (${delta(it.draft.charsAfter - it.draft.charsBefore)})</div>` : ""}
-     ${it.draft ? `<div class="small"><b>Proposed change:</b>${it.draft.how ? `<span class="chip ${it.draft.how === "added" ? "warn" : "ok"}">${{ added: "Adds a new line (nothing covered this)", replaced: "Replaces an existing rule", modified: "Edits existing rules" }[it.draft.how] || "Edits existing rules"}</span> ` : ""}${esc(it.draft.summary)}${it.draft.lostTags ? ` <span style="color:var(--warn)">(${it.draft.lostTags} block tag${it.draft.lostTags > 1 ? "s" : ""} dropped: check before applying)</span>` : ""}${stale ? ` <span style="color:var(--warn)">(drafted on v${esc(it.draft.baseV)}; the prompt has changed since)</span>` : ""}</div>
-       ${Object.entries(it.draft.sections || { [m.section]: it.draft.revised }).map(([s, t]) => `${it.draft.sections && Object.keys(it.draft.sections).length > 1 || s !== m.section ? `<div class="small muted" style="margin-top:4px">In <b>${esc(secTitle(s))}</b>:</div>` : ""}${diffHtml(latest.sections[s] || "", t, !stale && !ed && canDo("edit") ? { edit: { id: it.id, section: s } } : {})}`).join("")}${it.draft.editedByHand ? `<div class="small muted">You edited parts of this fix by hand.</div>` : ""}` : ""}
+   ${m && (m.diagnosis || m.fix) && it.status !== "applied" ? `<div class="why">${m.diagnosis ? `<span><b>Why:</b> ${esc(m.diagnosis)}</span>` : ""}${m.fix ? `<span><b>Fix:</b> ${esc(m.fix)}</span>` : ""}</div>` : ""}
+   ${it.status === "applied" ? `<div class="small" style="color:var(--ok)"><b>✓ Fixed in v${esc(it.appliedIn)}</b>${it.promoted ? " · logged as a shared-core fix" : ""}</div>` : ""}
+   ${mapped ? `
+     ${it.draft ? `<div class="small"><b>Proposed change</b>${it.draft.how ? ` <span class="chip ${it.draft.how === "added" ? "warn" : "ok"}">${{ added: "Adds a new line", replaced: "Replaces a rule", modified: "Edits existing rules" }[it.draft.how] || "Edits existing rules"}</span>` : ""} ${esc(it.draft.summary)}${it.draft && !stale && it.draft.charsBefore != null && it.draft.charsAfter != null ? ` <span class="muted">(${delta(it.draft.charsAfter - it.draft.charsBefore)} characters)</span>` : ""}${it.draft.lostTags ? ` <span style="color:var(--warn)">(${it.draft.lostTags} block tag${it.draft.lostTags > 1 ? "s" : ""} dropped: check before applying)</span>` : ""}${stale ? ` <span style="color:var(--warn)">(drafted on v${esc(it.draft.baseV)}; the prompt has changed since)</span>` : ""}</div>
+       ${Object.entries(it.draft.sections || { [m.section]: it.draft.revised }).map(([s, t]) => `${it.draft.sections && Object.keys(it.draft.sections).length > 1 || s !== m.section ? `<div class="small muted" style="margin-top:4px">In <b>${esc(secTitle(s))}</b>:</div>` : ""}${diffHtml(latest.sections[s] || "", t, !stale && !ed && edit ? { edit: { id: it.id, section: s } } : {})}`).join("")}${it.draft.editedByHand ? `<div class="small muted">You edited parts of this fix by hand.</div>` : ""}` : ""}
      ${it.draft && it.draft.understood ? `<div class="small" style="border-left:3px solid var(--accent);padding:4px 10px"><b>How the AI read your notes:</b> ${esc(it.draft.understood)}</div>` : ""}
      ${it.draft && !stale && !ed ? checkPanel(it) : ""}
-     ${!ed && canDo("edit") ? `<div class="stack" style="gap:6px;border-top:1px dashed var(--line);padding-top:8px">
-       ${(it.guidance || []).length ? `<div class="small"><b>Your notes on this fix</b> <span class="muted">(used in every draft)</span>${it.guidance.map((g, i) => `<div class="row" style="gap:6px;align-items:flex-start;margin-top:4px"><span style="flex:1">${i + 1}. ${g.from === "check" ? `<span class="chip">from check</span> ` : ""}${esc(g.text)} <span class="muted">· ${esc((g.by || "").split("@")[0])}, ${fmtDate(g.at)}</span></span><a href="#" data-act="gd-del" data-id="${it.id}" data-i="${i}" class="muted" title="Remove this note">✕</a></div>`).join("")}</div>` : ""}
-       <label class="f">${it.draft ? "Not quite right? Tell the AI what to change" : "Add details for the fix"} <span class="hint">(anything missing or misunderstood: exact wording, dates, what not to do. Your notes override the AI's diagnosis.)</span>
-        <textarea id="gd-${it.id}" rows="3" data-gd="${it.id}" placeholder="e.g. Don't ask 'this date or earlier'. Suggest a date 5–6 days before theirs, and mention arranging money from friends or family only once.">${esc((R.gd || {})[it.id] || "")}</textarea></label>
-       <div class="row" style="gap:6px"><button class="btn sm ${it.draft && !stale ? "" : "primary"} ai" data-act="draft-notes" data-id="${it.id}" ${aiOn() ? "" : "disabled"}>${(() => { const n = it.check && it.draft && it.check.draftAt === it.draft.at ? chkSel(it).size : 0; return it.draft ? (n ? `Redraft with ${n} ticked suggestion${n === 1 ? "" : "s"} + my notes` : "Redraft with my notes") : "Draft with my notes"; })()}</button></div></div>` : ""}
      ${ed ? `<textarea id="ed-${it.id}" rows="10" class="mono">${esc(it.draft && !stale ? it.draft.revised : (latest.sections[m.section] || ""))}</textarea>` : ""}
-     ${m.scope === "shared" ? `<label class="check small"><input type="checkbox" id="pr-${it.id}" data-act-check="promote" data-id="${it.id}" ${it.promote !== false ? "checked" : ""}> Also log as a shared-core fix, so it gets merged into the shared blocks for every client</label>` : ""}
-     <div class="row" style="gap:6px">
+     <div class="acts">
        ${(!it.draft || stale) && !ed ? `<button class="btn sm primary ai" data-act="draft" data-id="${it.id}" ${aiOn() ? "" : "disabled title='No AI model configured'"}>${stale ? "Draft again" : "Draft fix"}</button>` : ""}
-       ${it.draft && !stale && !ed ? `<button class="btn sm primary" data-act="apply" data-id="${it.id}" ${canDo("edit") ? "" : "disabled"}>${openDraft(latest) ? `Add to draft v${esc(latest.v)}` : "Apply as new draft version"}</button>` : ""}
-       ${ed ? `<button class="btn sm primary" data-act="apply-edit" data-id="${it.id}">${openDraft(latest) ? `Add edit to draft v${esc(latest.v)}` : "Apply edit as new draft version"}</button><button class="btn sm" data-act="cancel-edit" data-id="${it.id}">Cancel</button>` : `<button class="btn sm" data-act="edit" data-id="${it.id}">Edit by hand</button>`}
-       <button class="btn sm ghost" data-act="dismiss" data-id="${it.id}">Dismiss</button></div>` : ""}
-   ${it.status === "new" ? `<div class="small muted">Not mapped yet.</div>` : ""}
+       ${it.draft && !stale && !ed ? `<button class="btn sm primary" data-act="apply" data-id="${it.id}" ${edit ? "" : "disabled"}>${openDraft(latest) ? `Add to draft v${esc(latest.v)}` : "Apply as new draft"}</button>` : ""}
+       ${ed ? `<button class="btn sm primary" data-act="apply-edit" data-id="${it.id}">${openDraft(latest) ? `Add edit to draft v${esc(latest.v)}` : "Apply edit as new draft"}</button><button class="btn sm" data-act="cancel-edit" data-id="${it.id}">Cancel</button>` : `<button class="btn sm" data-act="edit" data-id="${it.id}">Edit by hand</button>`}
+     </div>
+     ${more}` : ""}
+   ${it.status === "new" ? `<div class="small muted">Not placed in the prompt yet.</div>` : ""}
    ${it.status === "dismissed" ? `<div class="row"><span class="small muted">Dismissed.</span><button class="btn sm ghost" data-act="undismiss" data-id="${it.id}">Restore</button></div>` : ""}
   </div>`;
 }
@@ -1293,7 +1353,7 @@ function viewApprovals() {
     return `<div class="panel stack">
     <div class="row" style="justify-content:space-between"><div><h3>${esc(v.promptName)} · v${esc(v.v)}</h3><div class="small muted">${esc(v.note)} · by ${esc(v.by)} · ${fmtDate(v.createdAt)}</div></div>${statusPill(v.status)}</div>
     <div class="row" style="gap:6px"><button class="btn sm" data-act="see-diff" data-pid="${v.promptId}" data-vid="${v.id}">See changes</button><a class="btn sm ghost" href="#improve" data-act="open-prompt" data-id="${v.promptId}">Open prompt</a>${canDo("edit") ? `<a class="btn sm ghost" href="#improve" data-act="open-edit" data-id="${v.promptId}" title="Edits are saved as a new draft that needs approval again">✎ Edit text</a>` : ""}</div>
-    ${v.status === "pending" ? (canDo("approve") ? `<div class="row" style="gap:6px"><input type="text" id="note-${v.id}" placeholder="Note (required to reject)" style="flex:1;min-width:180px"><button class="btn sm primary" data-act="approve" data-vid="${v.id}" ${v.by === R.me.email && R.me.role !== "admin" ? "disabled title='Someone other than the author must approve'" : ""}>Approve</button><button class="btn sm" data-act="reject" data-vid="${v.id}">Reject</button></div>` : `<div class="small muted">Waiting for an approver.</div>`) : ""}
+    ${v.status === "pending" ? (canDo("approve") ? `<div class="row" style="gap:6px"><input type="text" id="note-${v.id}" placeholder="Note (required to reject)" style="flex:1;min-width:180px"><button class="btn sm primary" data-act="approve" data-vid="${v.id}" ${!R.selfApprove && [v.by, ...(v.editedBy || [])].includes(R.me.email) && R.me.role !== "admin" ? "disabled title='Someone who did not write or edit this version must approve it'" : ""}>Approve</button><button class="btn sm" data-act="reject" data-vid="${v.id}">Reject</button></div>` : `<div class="small muted">Waiting for an approver.</div>`) : ""}
     ${v.status === "approved" ? `<div class="small muted">Approved by ${esc(v.approvedBy)} · ${fmtDate(v.approvedAt)}${last.note ? " · " + esc(last.note) : ""}</div>
      <div class="row" style="gap:6px">${pushControl({ prompt: { id: v.promptId }, agent }, v)}<span class="small muted">${agent ? `Writes the changes into ${esc(agent.name)} in Sarvam and commits a new version. You see them before anything is written.` : "Pick the Sarvam agent this prompt is for. Its prompt will be replaced by this one; you see it before anything is written."}</span></div>
      <details><summary class="small">Do it by hand instead</summary>
@@ -1304,7 +1364,7 @@ function viewApprovals() {
      </ol></details>` : ""}
    </div>`; };
   return `
-  <div class="view-head"><div><h1>Approvals</h1><p>Changes waiting for a second pair of eyes, then ready to push live.</p></div></div>
+  <div class="view-head"><div><h1>Approvals</h1><p>${R.selfApprove ? "Review each change, approve it, then push it live." : "Changes waiting for a second person to approve, then ready to push live."}</p></div></div>
   <div class="grid2">
    <div class="stack"><h2>Waiting for approval · ${pending.length}</h2>${pending.length ? pending.map(card).join("") : `<div class="empty">Nothing waiting.</div>`}</div>
    <div class="stack"><h2>Approved, not live yet · ${approved.length}</h2>${approved.length ? approved.map(card).join("") : `<div class="empty">Nothing approved and waiting to go live.</div>`}</div>
@@ -1389,11 +1449,17 @@ async function showDiffModal(pid, vid) {
 // agent: you see the exact changes first, they're saved as a draft, then approved and pushed as usual.
 async function loadMod(id) { const r = await api("GET", `/modules/${id}`); R.modDoc = r; R.modId = id; if (!R.modUse || R.modUse.docId !== id) R.modUse = { docId: id, agentId: "", options: null, params: {}, preview: null }; }
 const modSt = s => `<span class="chip ${s === "approved" ? "ok" : "warn"}">${s === "approved" ? "Approved" : "Draft"}</span>`;
+// Where the module library is saved (the git repo), and the last save error if any.
+function libLine() {
+  const l = R.lib; if (!l) return "";
+  const where = l.kind === "github" ? `Saved in git: <span class="mono">${esc(l.repo)}</span>, branch <span class="mono">${esc(l.branch)}</span>, folder <span class="mono">${esc(l.path)}</span>. Every save is a commit.` : `Saved as files in <span class="mono">${esc(l.path)}</span> of this folder. Commit them to git (set GITHUB_TOKEN on Render to commit automatically).`;
+  return `<p class="small muted">${where}</p>${l.lastError ? `<div class="vitem warn"><span class="ic">!</span><div class="vt"><b>Module library problem</b><span>${esc(l.lastError)}</span></div></div>` : ""}`;
+}
 function viewModules() {
   if (R.modId && R.modDoc) return viewModule();
   const L = R.mods || [], ag = (R.agents || []).filter(a => a.promptId);
   const X = R.modNew || (R.modNew = { agentId: "", topic: "", moduleId: "", title: "", open: false });
-  return `<div class="view-head"><div><h1>Module library</h1><p>Reusable rules for one behaviour, like payment dates. <b>Making or changing a module never changes an agent.</b> An agent changes only when you use a module for it and approve that change.</p></div>
+  return `<div class="view-head"><div><h1>Module library</h1><p>Reusable rules for one behaviour, like payment dates. <b>Making or changing a module never changes an agent.</b> An agent changes only when you use a module for it and approve that change.</p>${libLine()}</div>
    <div class="row">${canDo("edit") ? `<button class="btn primary" data-act="mod-new-toggle">+ Extract a module from an agent</button>` : ""}</div></div>
   ${X.open ? `<div class="panel stack" style="margin-bottom:16px"><h2>Extract a module</h2>
     <p class="small muted">The AI finds every rule about this behaviour in the agent's prompt, wherever it sits, and turns it into a client-neutral module with settings and tests. The agent is only read.</p>
@@ -1643,6 +1709,9 @@ const ACT = {
     closeModal(); await go();
     toast(`Rebuilt v${r.v} on Sarvam v${r.newest}: ${r.moved} change${r.moved === 1 ? "" : "s"} moved over, newer fixes kept.${r.reapprove ? " It needs approval again." : ""}`);
   }, "Rebuilding…"),
+  "in-mode": el => { R.inMode = el.dataset.m; render(); },
+  jump: el => { const t = document.getElementById(el.dataset.to); if (t) t.scrollIntoView({ behavior: "smooth", block: "start" }); },
+  "cv-jump": el => { const t = document.getElementById(el.dataset.to); if (t) { t.scrollIntoView({ behavior: "smooth", block: "center" }); t.parentElement.classList.add("cv-flash"); setTimeout(() => t.parentElement.classList.remove("cv-flash"), 1600); } },
   "diff-mode": el => { R.diffMode = el.dataset.m; try { localStorage.setItem("pb-diff-mode", R.diffMode); } catch (_) { } render(); },
   "hunk-edit": el => { R.hunkEdit = el.dataset.k; render(); const t = $("#hunk-text"); if (t) { t.focus(); t.setSelectionRange(t.value.length, t.value.length); } },
   "hunk-cancel": () => { R.hunkEdit = null; render(); },
@@ -1768,6 +1837,7 @@ const ACT = {
   undismiss: el => run(el, async () => { const it = item(el.dataset.id); await api("PATCH", `/feedback/${el.dataset.id}`, { status: it.map ? "mapped" : "new" }); await reloadCur(); }),
   cmp: el => { const i = +el.dataset.i; R.cmpOpen = R.cmpOpen === i ? null : i; render(); },
   submit: el => run(el, async () => { await api("POST", `/versions/${el.dataset.vid}/submit`); await reloadCur(); toast("Sent for approval"); }),
+  rollback: el => run(el, async () => { const r = await api("POST", `/versions/${el.dataset.vid}/rollback`); await reloadCur(); toast(r.recommitted ? `Rolled back. The prompt of Sarvam v${r.from} is committed again as Sarvam v${r.sarvamVersion}.` : "Rolled back."); }, "Rolling back…"),
   approve: el => run(el, async () => { await api("POST", `/versions/${el.dataset.vid}/approve`, { note: ($("#note-" + el.dataset.vid) || {}).value }); await go(); toast("Approved"); }),
   reject: el => run(el, async () => { await api("POST", `/versions/${el.dataset.vid}/reject`, { note: ($("#note-" + el.dataset.vid) || {}).value }); await go(); toast("Rejected and sent back to the author"); }),
   "see-diff": el => run(el, () => showDiffModal(el.dataset.pid, el.dataset.vid)),
@@ -1803,7 +1873,7 @@ document.addEventListener("click", e => {
 });
 $("#modal").addEventListener("click", e => { if (e.target.id === "modal") closeModal(); });
 // Remember which feedback-history group is open, so it stays open when the page redraws.
-document.addEventListener("toggle", e => { const d = e.target; if (d.matches && d.matches("details[data-g]")) { if (d.open) R.fbOpen = d.dataset.g; else if (R.fbOpen === d.dataset.g) R.fbOpen = null; } }, true);
+document.addEventListener("toggle", e => { const d = e.target; if (d.matches && d.matches("details[data-fbm]")) { R.fbMore = R.fbMore || new Set(); d.open ? R.fbMore.add(d.dataset.fbm) : R.fbMore.delete(d.dataset.fbm); return; } if (d.matches && d.matches("details[data-g]")) { if (d.open) R.fbOpen = d.dataset.g; else if (R.fbOpen === d.dataset.g) R.fbOpen = null; } }, true);
 document.addEventListener("click", e => $$("details.more[open]").forEach(d => { if (!d.contains(e.target)) d.open = false; }));
 document.addEventListener("keydown", e => { if (e.key === "Escape" && !$("#modal").hidden) closeModal(); });
 
@@ -1907,12 +1977,13 @@ document.addEventListener("drop", e => { const s = e.target.closest && e.target.
 // ---------- Boot ----------
 async function boot() {
   $("#login").hidden = true; $("#shell").hidden = false;
-  $("#who").textContent = `${R.me.name} · ${R.me.role}`;
+  $("#who").innerHTML = `<b>${esc(R.me.name)}</b><small>${esc(R.me.role)}</small>`;
   try { R.health = await api("GET", "/health"); } catch (e) { R.health = null; }
   const on = aiOn();
-  $("#aiState").innerHTML = `<span class="dot ${on ? "on" : "off"}"></span><span>${on ? "AI: " + esc(R.health.llm[0]) : "AI off: keyword rules"}</span>`;
+  $("#aiState").innerHTML = `<span class="dot ${on ? "on" : "off"}"></span><span>${on ? "AI ready" : "AI off"}</span>`;
+  $("#aiState").title = on ? `AI model: ${R.health.llm.join(" → ")}` : "No AI model configured: feedback is mapped by keyword rules and drafting is off.";
   api("GET", "/approvals").then(r => { R.approvals = r.items; updateBadge(); }).catch(() => { });
   go();
 }
 loadLocal();
-api("GET", "/me").then(r => { R.me = r.user; boot(); }).catch(() => showLogin());
+api("GET", "/me").then(r => { R.me = r.user; R.selfApprove = r.selfApprove !== false; boot(); }).catch(() => showLogin());
