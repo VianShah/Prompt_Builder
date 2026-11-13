@@ -17,20 +17,7 @@ const sortV = vs => vs.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 const vnum = v => String(v).split('.').map(Number);
 const cmpV = (a, b) => { const x = vnum(a), y = vnum(b); return (x[0] - y[0]) || ((x[1] || 0) - (y[1] || 0)); };
 
-// The agent's current full text as it reads in Sarvam (latest version), its call variables, greeting.
-async function agentText(agentId) {
-  const agent = await db.get('agents', agentId);
-  if (!agent) throw fail(404, 'Unknown agent.');
-  const p = (await db.list('prompts')).find(x => x.agentId === agent.id);
-  if (!p) throw fail(409, `${agent.name} has no prompt in the builder yet. Open it and load its prompt from Sarvam first.`);
-  const vs = sortV(await db.list('versions', x => x.promptId === p.id));
-  const base = vs[vs.length - 1], live = vs.find(x => x.status === 'live');
-  const t = pushLib.sarvamTextFor(live, base);
-  const text = t ? t.text : core.toMarkdown(core.header(p.cfg, base.v), base.order, base.sections, false).trim();
-  const variables = [...new Set((text.match(/\{\{\s*(\w+)\s*\}\}/g) || []).map(s => s.replace(/[{}\s]/g, '')))].slice(0, 60);
-  const greeting = base.greeting || (((base.sarvamMeta || (live && live.sarvamMeta)) || {}).greeting) || '';
-  return { agent, prompt: p, base, live, text, variables, greeting };
-}
+const { agentText } = require('../lib/agentText');
 
 // Which agents use which module version (from each prompt's latest and live versions).
 async function usage() {
@@ -118,9 +105,9 @@ r.post('/modules/:id/approve', h(async (req, res) => {
   if (!m) throw fail(404, 'Module not found.');
   if (m.status !== 'draft') throw fail(409, 'Only a draft can be approved.');
   if (!config.selfApprove && m.owner === req.user.email && req.user.role !== 'admin') throw fail(409, 'Someone other than the author must approve this module.');
-  // Fail closed: a module goes into the library only with its tests and no unresolved placeholders.
+  // Fail closed: a module goes into the library only with rules and no unresolved [CONFIRM] placeholders.
+  // Tests are shown as a recommendation on the module page (rules extracted from live agents start without them).
   const problems = [];
-  if (!(m.tests || []).length) problems.push('it has no tests');
   const text = m.rules.map(x => x.text).join('\n');
   if (/\[CONFIRM[:\]]/i.test(text)) problems.push('it still has [CONFIRM: …] placeholders');
   if (!m.rules.length) problems.push('it has no rules');

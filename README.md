@@ -49,9 +49,23 @@ Set `SARVAM_API_KEY` (Sarvam > Voice Agents > Settings > API key) on Render. The
 
 After signing in, **Load all prompts** on the Agents page copies every agent's committed prompt in the background, with a progress bar. It stops cleanly if the login lapses.
 
+### Library and New prompt
+
+Each agent type (**Collections**, **Sales**) has its own library, on the **Library** page:
+
+1. **Structure:** the Greeting plus the sections every prompt of that type has, marked required or optional. *Derive from agents* reads the live agents' prompts and proposes it; *Draft from documents* does the same from client documents (for a type with no live agents yet). An approver confirms it. It's saved as `library/skeletons/<type>.json`.
+2. **Rules:** *Build from agents* reads every live agent of the type, splits each prompt into rules by section, merges near-duplicates across agents (keeping the other wordings), and saves them as draft entries that record which agents use them. *Add from documents* drafts rules from client documents. Engineers approve entries on their module page. Collections also lists the builder's built-in blocks in each section.
+
+Set each agent's type under **Agents and their type** on the Library page.
+
+**New prompt** has three steps:
+1. **Client:** type, client, agent name, product, objective.
+2. **Source:** a live agent (its greeting and rules fill the sections) or a clean slate (the structure, empty).
+3. **Review:** the Greeting and every section. Add rules from the library, or **Use the best modules** (the AI picks the best-fitting rule per section and says why). **Refine** tailors a rule to this client and saves it to the library as a variant. Checks block saving while a required section is empty, a `[[placeholder]]` or `[CONFIRM: …]` is left, or a rule names another client. Save creates a draft; approve and push it as usual.
+
 ### Module library (in git)
 
-Modules are JSON files in `library/modules/<MODULE-ID>/<version>.json`, not in the database.
+Library entries are JSON files in `library/modules/<MODULE-ID>/<version>.json` and structures in `library/skeletons/<type>.json`, not in the database.
 
 - **On Render:** set `GITHUB_TOKEN` (fine-grained token, *Contents: read and write* on this repo only) and `GITHUB_REPO`. The builder reads the library from the `module-library` branch at start, and every module save, approval or delete is a commit there. It's a separate branch so a module save doesn't redeploy the service. Merge `module-library` into `main` whenever you want the library in `main`.
 - **On your computer:** leave `GITHUB_TOKEN` empty. Modules are written to `library/modules/` in this folder; commit them like any other change.

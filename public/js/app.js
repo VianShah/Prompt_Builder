@@ -1951,6 +1951,11 @@ const ACT = {
   "kbd-all": el => { const D = kbImp().draft; if (!D) return; [...D.facts, ...D.faqs].forEach(x => x.on = el.dataset.on === "1"); render(); },
   "kb-paste-add": () => { const I = kbImp(), t = (I.paste || "").trim(); if (t.length < 20) return toast("Paste some text first."); I.files.push({ name: `Pasted text ${I.files.filter(f => /^Pasted text/.test(f.name)).length + 1}`, size: t.length, text: t, facts: [], faqs: [], status: "ready" }); I.paste = ""; render(); },
   "kb-accept": () => { const I = kbImp(), D = I.draft, kb = L.cfg.kb; if (!D) return;
+    // Inside New prompt: the ticked facts and FAQs become rules of the prompt's facts section.
+    if (R.kbTarget && L.np && route() === "create") { const np = L.np, sec = R.kbTarget.sec; let n = 0;
+      D.facts.filter(x => x.on).forEach(f => { if (npAdd(np, sec, { text: `${f.k}: ${f.v}`, from: { agent: f.src || "documents" } })) n++; });
+      D.faqs.filter(x => x.on).forEach(f => { if (npAdd(np, sec, { text: `Q: ${f.q}\nA: ${f.a}`, from: { agent: f.src || "documents" } })) n++; });
+      I.draft = null; R.npKb = null; R.kbTarget = null; commit(); toast(`Added ${n} facts and FAQs to the prompt.`); return; }
     const f = D.facts.filter(x => x.on).map(({ k, v, src, kind }) => ({ k, v, src, kind })), q = D.faqs.filter(x => x.on).map(({ q, a, src }) => ({ q, a, src }));
     kb.facts.push(...f); kb.faqs.push(...q); if (D.useOos && D.oos) kb.oos = D.oos;
     I.draft = null; commit(); toast(`Added ${f.length} facts and ${q.length} FAQs to the knowledge base.`); },

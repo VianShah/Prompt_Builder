@@ -24,6 +24,7 @@ app.use('/api', require('./routes/prompts'));
 app.use('/api', require('./routes/feedback'));
 app.use('/api', require('./routes/ai'));
 app.use('/api', require('./routes/modules'));
+app.use('/api', require('./routes/library'));
 app.use('/api', (req, res) => res.status(404).json({ error: 'Not found.' }));
 
 // no-cache: browsers re-check the scripts on every load, so an update shows up without a hard refresh.
