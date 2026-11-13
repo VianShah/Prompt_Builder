@@ -422,18 +422,19 @@ function viewCreate() {
   const c = L.cfg;
   if (autoMap(c)) saveLocal(); // variables the prompt uses are mapped before anything is checked
   const vals = validate(c);
-  const rail = STEPS.map((s, i) => `<button type="button" class="${stepStatus(i, vals)}" data-act="step" data-i="${i}" ${i === L.step ? 'aria-current="step"' : ""}><span class="n">${stepStatus(i, vals) === "bad" ? "!" : i + 1}</span>${s}</button>`).join("");
+  const errs = vals.filter(v => v.lvl === "err").length;
+  const rail = STEPS.map((s, i) => { const st = stepStatus(i, vals); return `<button type="button" class="${st}" data-act="step" data-i="${i}" ${i === L.step ? 'aria-current="step"' : ""}>${st === "bad" ? `<span class="mk bad" title="Needs attention"></span>` : st === "done" ? `<span class="mk done">✓</span>` : `<span class="mk"></span>`}<span>${s}</span></button>`; }).join("");
   const body = [stepClient, stepObjective, stepPolicy, stepCompliance, stepPersona, stepMapping, stepKB, stepAssembly, stepValidate, stepGenerate][L.step](c, vals);
   return `
-  <div class="view-head"><div><h1>Create a prompt</h1><p>Step ${L.step + 1} of ${STEPS.length}: ${STEPS[L.step]}. The draft is kept in this browser until you save it.</p></div>
-  <div class="row"><button class="btn sm" data-act="reset">Start over</button></div></div>
+  <div class="view-head"><div><h1>New prompt</h1><p>Step ${L.step + 1} of ${STEPS.length}${errs ? ` · <span style="color:var(--err)">${errs} to fix</span>` : ""} · saved in this browser as you go</p></div>
+  <div class="row" style="gap:8px"><button class="btn ${L.preview ? "pill" : ""}" data-act="preview" aria-pressed="${!!L.preview}">Preview</button><button class="btn ghost" data-act="reset">Start over</button></div></div>
   <div class="create">
     <nav class="rail" aria-label="Steps">${rail}</nav>
-    <section class="panel">${body}
-      <div class="step-foot">${L.step > 0 ? `<button class="btn" data-act="step" data-i="${L.step - 1}">← ${STEPS[L.step - 1]}</button>` : "<span></span>"}${L.step < STEPS.length - 1 ? `<button class="btn primary" data-act="step" data-i="${L.step + 1}">${STEPS[L.step + 1]} →</button>` : ""}</div>
+    <section class="form">${body}
+      <div class="step-foot">${L.step > 0 ? `<button class="btn ghost" data-act="step" data-i="${L.step - 1}">← Back</button>` : "<span></span>"}${L.step < STEPS.length - 1 ? `<button class="btn primary" data-act="step" data-i="${L.step + 1}">Next: ${STEPS[L.step + 1]} →</button>` : ""}</div>
     </section>
-    <aside class="panel insights" id="insights">${insights(c)}</aside>
-  </div>`;
+  </div>
+  ${L.preview ? `<aside class="drawer" aria-label="Preview"><div class="row" style="justify-content:space-between;margin-bottom:12px"><h2>Preview</h2><button class="btn sm ghost" data-act="preview" aria-label="Close">✕</button></div><div id="insights">${insights(c)}</div></aside>` : ""}`;
 }
 function insights(c) {
   const asm = assemble(c);
@@ -444,32 +445,30 @@ function insights(c) {
   const bySrc = {}; used.forEach(b => bySrc[b.src] = (bySrc[b.src] || 0) + 1);
   const p = personaById(c.persona);
   return `<div class="stack">
-    <div><div class="eyebrow">Live outline</div><p class="small muted">${used.length} blocks · about ${total.toLocaleString()} words</p></div>
+    <div><h3>Outline</h3><p class="small muted">${used.length} blocks · about ${total.toLocaleString()} words</p></div>
     <div>${per.map((x, i) => `<div class="outline-item"><span style="min-width:0">${i + 1}. ${secTitle(x.sec)} <span class="muted small">(${x.n})</span></span><span class="bar" title="${x.w} words"><i style="width:${Math.round(x.w / max * 100)}%"></i></span></div>`).join("")}</div>
-    <hr class="sep"><div class="eyebrow">Moving parts</div>
+    <hr class="sep"><h3>What the settings changed</h3>
     <div class="stack" style="gap:6px">${movingParts(c).map(m => `<div class="impact"><b>${esc(m.label)}</b> → ${esc(m.b.t)} <span class="muted">(${m.id}, from ${esc(m.b.src)})</span></div>`).join("")}
       <div class="impact"><b>Persona</b> → ${p.t}, pressure ${p.heat}/5, ${p.heat <= 2 ? 2 : 3} persuasion cycles</div>
       <div class="impact"><b>Bucket</b> → opener status line for ${bucketT(c.bucket)}</div></div>
-    <hr class="sep"><div class="eyebrow">Blocks by layer</div>
+    <hr class="sep"><h3>Blocks by layer</h3>
     <div class="row" style="gap:6px">${LAYERS.filter(l => byLayer[l.id]).map(l => `<span class="chip lchip" style="background:${LAYER_COLOR(l.id)}" title="${l.name}">${l.id} · ${byLayer[l.id]}</span>`).join("")}</div>
-    <div class="eyebrow">Blocks by source</div>
+    <h3>Blocks by source</h3>
     <div class="row" style="gap:6px">${Object.entries(bySrc).sort((a, b) => b[1] - a[1]).map(([s, n]) => `<span class="chip src">${esc(s)} · ${n}</span>`).join("")}</div>
   </div>`;
 }
 function stepClient(c) {
   const cl = c.client;
   return `<div class="stack">
-  <div><h2>Client setup</h2><p class="muted">Who the agent works for and what it's collecting on.</p></div>
-  <div><div class="eyebrow" style="margin-bottom:6px">Start from a proven production prompt</div>
-   <div class="choice">${Object.entries(PRESETS).map(([k, p]) => `<button type="button" class="opt" data-act="preset" data-k="${k}" aria-pressed="${c.preset === k}"><b>${p.label}</b><span>Loads policy, compliance, persona, mapping and KB</span></button>`).join("")}
-   <button type="button" class="opt" data-act="preset" data-k="blank" aria-pressed="${c.preset === "blank"}"><b>Blank</b><span>Shared core only. You set everything.</span></button></div></div>
+  <div><h2>Client setup</h2><p class="muted">Who the agent works for and what it's about.</p></div>
+  <div class="row" style="gap:10px"><span class="small muted">Start from</span><div class="seg" role="group">${Object.entries(PRESETS).map(([k, p]) => `<button type="button" data-act="preset" data-k="${k}" aria-pressed="${c.preset === k}" title="A proven production prompt: loads policy, compliance, persona, mapping and knowledge base">${esc(p.label)}</button>`).join("")}<button type="button" data-act="preset" data-k="blank" aria-pressed="${c.preset === "blank"}" title="Shared core only; you set everything">Blank</button></div></div>
   <div class="fgrid">${field("Client name", "client.name", cl.name, "(short)")}${field("Legal name", "client.legal", cl.legal)}</div>
   ${trow("Agent calls as", "Changes the greeting and the disclosure line.", seg("client.callingAs", [["lender", "The lender"], ["agency", "Agency on lender's behalf"]], cl.callingAs))}
   ${cl.callingAs === "agency" ? `<div class="fgrid">${field("Agency name", "client.agency", cl.agency)}</div>` : ""}
   <div class="fgrid"><label class="f">Product<select data-bind="client.product" id="f-product">${PRODUCTS.map(p => `<option ${p === cl.product ? "selected" : ""}>${p}</option>`).join("")}</select></label>${field("Agent name", "client.agentName", cl.agentName)}</div>
   <label class="f">What the product is <span class="hint">(one or two lines, goes into the knowledge base)</span><textarea id="f-pdesc" data-bind="client.productDesc" rows="2">${esc(cl.productDesc)}</textarea></label>
   ${trow("Agent voice gender", "Sets gendered verb forms (bol rahi / bol raha).", seg("client.agentGender", [["female", "Female"], ["male", "Male"]], cl.agentGender))}
-  <div><div class="eyebrow" style="margin-bottom:6px">Supported languages</div><div class="row" style="gap:6px">${LANGS.map(l => `<button type="button" class="btn sm" data-act="lang" data-l="${l}" aria-pressed="${cl.languages.includes(l)}" style="${cl.languages.includes(l) ? "background:var(--accent-soft);border-color:var(--accent);color:var(--accent)" : ""}">${l}</button>`).join("")}</div></div>
+  <div><div class="lbl">Languages</div><div class="row" style="gap:6px">${LANGS.map(l => `<button type="button" class="btn sm" data-act="lang" data-l="${l}" aria-pressed="${cl.languages.includes(l)}">${l}</button>`).join("")}</div></div>
   </div>`;
 }
 function stepObjective(c) {
@@ -1959,6 +1958,7 @@ const ACT = {
     c.mapping[k] = h || (seen && seen.name) || k; c.mapSrc[k] = h ? "file" : seen ? `agents:${seen.agents.length}` : "standard"; commit(); },
   "extra-add": el => { addExtra(el.dataset.k, el.dataset.from); },
   "extra-new": () => { const v = ($("#extra-new") || {}).value || ""; if (!snake(v)) return toast("Type a field name first."); addExtra(v, ""); },
+  preview: () => { L.preview = !L.preview; commit(); },
   "in-mode": el => { R.inMode = el.dataset.m; render(); },
   jump: el => { const t = document.getElementById(el.dataset.to); if (t) t.scrollIntoView({ behavior: "smooth", block: "start" }); },
   "cv-jump": el => { const t = document.getElementById(el.dataset.to); if (t) { t.scrollIntoView({ behavior: "smooth", block: "center" }); t.parentElement.classList.add("cv-flash"); setTimeout(() => t.parentElement.classList.remove("cv-flash"), 1600); } },
