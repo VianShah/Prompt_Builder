@@ -9,7 +9,7 @@ const LIB = 'modules';
 // collection -> kind of file in the git library
 const LIBK = { modules: 'module', skeletons: 'skeleton' };
 
-const COLLECTIONS = ['skeletons', 'agents', 'prompts', 'versions', 'feedback', 'coreChanges', 'audit', 'settings', 'tests', 'factory', 'modules'];
+const COLLECTIONS = ['callReviews', 'skeletons', 'agents', 'prompts', 'versions', 'feedback', 'coreChanges', 'audit', 'settings', 'tests', 'factory', 'modules'];
 let pool = null;
 const FILE = path.join(__dirname, '..', 'data', 'store.json');
 let mem = null;

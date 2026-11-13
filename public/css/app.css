@@ -634,3 +634,28 @@ input[type=search]:focus{outline:none;border-color:var(--accent);box-shadow:0 0 
 .sp-row:first-child{border-top:0}
 .sp-row .nm{flex:1;min-width:0}
 .sp-row input{accent-color:var(--accent)}
+
+/* Call review (+/-) and the error frequency heatmap */
+.rv-item{display:flex;gap:10px;align-items:flex-start;padding:10px 12px;border-radius:var(--r-sm);border:1px solid var(--line);background:var(--surface);font-size:13.5px}
+.rv-item.plus{border-color:transparent;background:var(--accent-soft)}
+.rv-item .check{gap:10px}
+.rv-item > span:last-child,.rv-item label > span:last-child{display:flex;flex-direction:column;gap:4px;min-width:0}
+.rv-s{flex:none;width:22px;height:22px;border-radius:50%;display:inline-grid;place-items:center;font-weight:700;font-size:14px}
+.rv-item.plus .rv-s{background:var(--accent);color:var(--accent-ink)}
+.rv-item.minus .rv-s{background:var(--err-soft);color:var(--err)}
+.rv-q{border-left:3px solid var(--line2);background:var(--sunk);padding:6px 10px;border-radius:4px;white-space:pre-wrap}
+.ef h3{font-size:14px}
+.ef-wrap{border:0}
+.ef-t{border-collapse:separate;border-spacing:2px;background:transparent}
+.ef-t th,.ef-t td{border:0;padding:6px 8px;font-size:12.5px}
+.ef-t thead th{font-weight:500;color:var(--muted);text-align:center;vertical-align:bottom;max-width:96px;white-space:normal;line-height:1.25}
+.ef-t tbody th{font-weight:500;color:var(--ink2);text-align:left;white-space:nowrap;background:transparent}
+.ef-c{min-width:44px;text-align:center;border-radius:4px;font-variant-numeric:tabular-nums;font-weight:600;color:var(--ink)}
+.ef-0{background:var(--sunk)}
+.ef-t tr:hover td{background-blend-mode:normal}
+.ef-tot{display:flex;align-items:center;gap:8px;min-width:120px}
+.ef-bar{flex:1;height:6px;background:var(--sunk);border-radius:3px;overflow:hidden}
+.ef-bar i{display:block;height:100%;background:var(--accent);border-radius:3px}
+.rv-h{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 10px}
+.turn{grid-template-columns:78px 1fr auto}
+.turn .who{white-space:nowrap}

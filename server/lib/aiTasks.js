@@ -226,6 +226,45 @@ Reply with plain text only.`;
   return { text: String(text || '').trim(), provider: 'Claude (Bedrock)' };
 }
 
+// Review one call (usually UAT): what went well (+) and what went wrong (-), from the transcript and the
+// reviewer's own observations. Every "-" says why, against the prompt the agent had on that call.
+// Categories and call types are fixed lists, so they can be counted (error frequency).
+const MISTAKE_CATS = ['Identity and disclosure', 'Wrong or invented information', 'Tone and pressure', 'Objection not handled', 'Did not follow the flow', 'Payment, offer or date handling', 'Language and speech', 'Call control (interruptions, silence, ending)', 'Other'];
+const CALL_TYPES = {
+  collections: ['Promise to pay', 'Partial payment', 'Refused to pay', 'Already paid', 'Dispute or complaint', 'Hardship', 'Callback requested', 'Wrong person or third party', 'No real conversation', 'Other'],
+  sales: ['Interested', 'Not interested', 'Not eligible', 'Has questions', 'Callback requested', 'Wrong person', 'No real conversation', 'Other'],
+};
+async function reviewCall({ text, turns, observations, callInfo }) {
+  const types = CALL_TYPES[K().t] || CALL_TYPES.collections;
+  const obs = String(observations || '').split(/\r?\n/).map(x => x.replace(/^[-*•\d.)\s]+/, '').trim()).filter(Boolean).slice(0, 30);
+  const req = `Review a ${K().call} made by a voice agent (${K().domain})${callInfo ? `, ${callInfo}` : ''}. List what the agent did WELL ("+") and what it did WRONG ("-").
+For every "-": which line of the transcript (turn number), the category, and WHY it happened, compared with the agent's prompt below: quote the prompt passage that caused it (copied exactly), or say the prompt has no rule for it ("missing"), or that the agent ignored a clear rule ("ignored"). Then one sentence on how to fix the prompt.
+${obs.length ? `The reviewer listened to the call and noted these observations. Include EACH of them as its own item, deciding "+" or "-" from what it says and checking it against the transcript:\n${obs.map((o, i) => `${i + 1}. ${o}`).join('\n')}\n` : ''}Also add anything else important you find. Do not repeat the same point twice. Be concrete.
+Categories (use exactly one): ${MISTAKE_CATS.join('; ')}.
+Call type (exactly one, what this call was): ${types.join('; ')}.
+
+THE AGENT'S PROMPT:
+<<<
+${String(text || '').slice(0, 120000)}
+>>>
+
+TRANSCRIPT (turn number, speaker, text):
+${(turns || []).map((t, i) => `[${i}] ${t.role === 'agent' ? 'Agent' : t.role === 'user' ? 'Customer' : t.role}: ${String(t.text || '').slice(0, 800)}`).join('\n').slice(0, 60000)}
+
+Reply with only JSON: {"callType": "", "summary": "one sentence", "items": [{"sign": "+" | "-", "text": "what the agent did, one sentence", "turn": 0, "category": "", "fromObservation": 0, "cause": "quoted" | "missing" | "ignored", "quote": "", "why": "", "fix": ""}]}`;
+  const r = await llm.json(req, { maxTokens: 8000, timeoutMs: 240000 });
+  const d = r.data || {};
+  const flat = String(text || '').replace(/\s+/g, ' ');
+  const items = (Array.isArray(d.items) ? d.items : []).filter(x => x && (x.sign === '+' || x.sign === '-') && x.text).slice(0, 40).map(x => {
+    const q = String(x.quote || '').trim();
+    return { sign: x.sign, text: String(x.text).slice(0, 400), turn: Number.isInteger(+x.turn) && +x.turn >= 0 && +x.turn < (turns || []).length ? +x.turn : null,
+      category: x.sign === '-' ? (MISTAKE_CATS.includes(x.category) ? x.category : 'Other') : null, fromObservation: +x.fromObservation > 0 ? +x.fromObservation : null,
+      cause: x.sign === '-' ? (['quoted', 'missing', 'ignored'].includes(x.cause) ? x.cause : 'missing') : null,
+      quote: x.sign === '-' && q ? q.slice(0, 800) : '', quoteFound: !!q && flat.includes(q.replace(/\s+/g, ' ')), why: String(x.why || '').slice(0, 500), fix: String(x.fix || '').slice(0, 500) };
+  });
+  return { callType: types.includes(d.callType) ? d.callType : 'Other', summary: String(d.summary || '').slice(0, 300), items, observations: obs, provider: r.provider };
+}
+
 // Knowledge base from documents (product sheets, policy PDFs, FAQ files...). The browser extracts the
 // text and sends it in batches; each batch comes back as facts and FAQs that name the file they came
 // from, for a person to review before anything is added. Only what the documents say is used.
@@ -754,4 +793,4 @@ At most 10 differences, most important first.`;
     differences: (Array.isArray(d.differences) ? d.differences : []).filter(x => x && x.area).slice(0, 10).map(x => ({ area: String(x.area), a: String(x.a || ''), b: String(x.b || ''), risk: ['high', 'medium', 'low'].includes(x.risk) ? x.risk : 'low' })) };
 }
 
-module.exports = { resplit, readImagesToText, reviewWithFixes, kbFromDocs, SKELETON, factoryMap, factoryAssemble, factoryReview, factoryRevise, diagnoseGroup, buildTests, runTest, optimizePrompt, applyEdits, analyzeTranscript, critiqueFix, mapFeedback, draftFix, review, kbDraft, importPrompt, diagnoseCall, compareSummary };
+module.exports = { reviewCall, MISTAKE_CATS, CALL_TYPES, resplit, readImagesToText, reviewWithFixes, kbFromDocs, SKELETON, factoryMap, factoryAssemble, factoryReview, factoryRevise, diagnoseGroup, buildTests, runTest, optimizePrompt, applyEdits, analyzeTranscript, critiqueFix, mapFeedback, draftFix, review, kbDraft, importPrompt, diagnoseCall, compareSummary };

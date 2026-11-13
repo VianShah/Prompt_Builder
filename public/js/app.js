@@ -223,7 +223,7 @@ const ROUTES = {
     if (ag && !ag.promptId) { R.cur = null; R.curId = null; return; }
     await loadCur(ag ? ag.promptId : undefined);
     const agent = R.agentId && R.agents.find(a => a.id === R.agentId);
-    if (R.tab === "calls" && agent && (!R.calls || R.calls.agentId !== agent.id)) loadCalls(agent);
+    if (R.tab === "calls" && agent) { const ca = curAgent() || agent; if (!R.calls || R.calls.agentId !== ca.id) loadCalls(ca); loadReviews(agent); }
     if (R.tab === "settings" && agent && (!R.acfg || R.acfg.agentId !== agent.id)) loadCfg(agent);
     loadLost();
     if (R.pendingEdit) { R.pendingEdit = false; const t = R.sv && R.sv.text ? R.sv.text : mdOf(R.cur.prompt.cfg, latestOf(R.cur), false); R.editText = { text: t, orig: t, greeting: greetingNow(), og: greetingNow() }; }
@@ -234,6 +234,13 @@ const ROUTES = {
   modules: { view: viewModules, load: async () => { await Promise.all([loadAgents(true), loadPrompts(true)]); const mr = await api("GET", "/modules"); R.mods = mr.items; R.lib = mr.library; if (R.modId) await loadMod(R.modId); } }
 };
 const route = () => { const h = location.hash.slice(1).split("?")[0]; return ROUTES[h] ? h : "agents"; };
+// The Sarvam sign-in lasts about 24 hours: warn in the last two, on every page.
+function expiryBanner() {
+  const s = R.sarvam; if (!s || !s.hasToken || s.expired || !s.expiresAt) return "";
+  const left = Date.parse(s.expiresAt) - Date.now(); if (left <= 0 || left > 2 * 3600e3) return "";
+  const m = Math.round(left / 60000);
+  return `<div class="notice"><span><b>The Sarvam sign-in ends in ${m >= 60 ? `${Math.floor(m / 60)}h ${m % 60}m` : `${m} min`}.</b> Loading prompts, pushing and calls stop then. Sign in again now to avoid a gap.</span>${canDo("approve") ? `<a class="btn sm" href="#agents">Reconnect</a>` : ""}</div>`;
+}
 function updateBadge() {
   const n = (R.approvals || []).filter(v => ["pending", "approved"].includes(v.status)).length, b = $("#apprCount");
   if (b) { b.textContent = n; b.hidden = !n; }
@@ -244,7 +251,7 @@ function render() {
   $$("#tabs a").forEach(x => x.setAttribute("aria-current", x.getAttribute("href") === "#" + r || (x.dataset.also || "").split(" ").includes(r) ? "page" : "false"));
   updateBadge();
   const audio = $("#callAudio");
-  $("#app").innerHTML = ROUTES[r].view();
+  $("#app").innerHTML = expiryBanner() + ROUTES[r].view();
   wireAudio(audio);
   if (fid) { const el = document.getElementById(fid); if (el) { el.focus({ preventScroll: true }); try { if (ss != null) el.setSelectionRange(ss, se); } catch (e) { } } }
 }
@@ -847,7 +854,14 @@ const dayStr = d => { const x = new Date(d); return `${x.getFullYear()}-${String
 const mmss = s => s == null ? "" : `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
 const callFlags = iid => (R.feedback || []).filter(f => f.call && f.call.iid === iid);
 const ENDED = { USER_ENDS: "customer hung up", AGENT_ENDS: "agent ended", TIMEOUT: "timed out" };
-function callsTab(agent) {
+function callsTab(main) {
+  const uat = main.uatAgentId && (R.agents || []).find(a => a.id === main.uatAgentId);
+  const agent = curAgent() || main;
+  if (R.call && R.call.agentId === agent.id) return callsList(agent);
+  const sw = uat ? `<div class="row" style="gap:10px"><span class="small muted">Calls of</span><div class="seg" role="group"><button type="button" data-act="calls-src" data-v="" aria-pressed="${agent.id === main.id}">This agent</button><button type="button" data-act="calls-src" data-v="${esc(uat.id)}" aria-pressed="${agent.id === uat.id}">UAT: ${esc(uat.name)}</button></div>${agent.id === uat.id ? `<span class="small muted">Mistakes found here are fixed on ${esc(main.name)}.</span>` : ""}</div>` : "";
+  return `<div class="stack">${sw}${errorFrequency(main)}${callsList(agent)}</div>`;
+}
+function callsList(agent) {
   const C = R.calls && R.calls.agentId === agent.id ? R.calls : null;
   if (R.call && R.call.agentId === agent.id) return callView(agent);
   const from = (C && C.from) || dayStr(Date.now() - 6 * 864e5), to = (C && C.to) || dayStr(Date.now());
@@ -871,8 +885,8 @@ function callsTab(agent) {
     <span class="num">${fmtDur(c.durationSeconds)}</span><span><span class="chip acc">v${esc(c.version || "?")}</span></span>
     <span class="small">${esc(c.language || "—")}</span><span class="small muted">${esc(c.contact || (c.direction === "inbound" ? "inbound" : ""))}</span>
     <span class="small muted">${esc(c.failure ? c.failure.toLowerCase().replace(/_/g, " ") : ENDED[c.endedBy] || c.endedBy.toLowerCase().replace(/_/g, " "))}</span>
-    <span>${f ? `<span class="chip err">⚑ ${f}</span>` : c.messages ? `<span class="small muted">${c.messages} lines</span>` : ""}</span></a>`; }).join("");
-  return `<div class="stack">${bar}${shown.length ? `<div class="clist"><div class="crow head"><span>When</span><span>Length</span><span>Ver.</span><span>Language</span><span>Contact</span><span>Ended</span><span>Flags</span></div>${rows}</div>
+    <span>${(() => { const rv = reviewOf(agent.id, c.id); return rv ? `<span class="chip acc" title="Reviewed: ${rv.plus} good, ${rv.minus.length} mistakes">+${rv.plus} −${rv.minus.length}</span>` : ""; })()}${f ? ` <span class="chip err">⚑ ${f}</span>` : !reviewOf(agent.id, c.id) && c.messages ? `<span class="small muted">${c.messages} lines</span>` : ""}</span></a>`; }).join("");
+  return `<div class="stack">${bar}${shown.length ? `<div class="clist"><div class="crow head"><span>When</span><span>Length</span><span>Ver.</span><span>Language</span><span>Contact</span><span>Ended</span><span>Review</span></div>${rows}</div>
    ${C.more ? `<div class="row"><button class="btn" data-act="calls-more">Load more</button></div>` : ""}` : `<div class="empty">No calls in these dates${C.ver ? ` for v${esc(C.ver)}` : ""}.</div>`}</div>`;
 }
 const callsShown = C => (C.items || []).filter(c => (!C.hideTest || !c.test) && (!C.ver || String(c.version) === String(C.ver)));
@@ -887,6 +901,47 @@ async function loadCalls(agent, opts = {}) {
     R.calls = { ...R.calls, loading: false, items: opts.more ? [...(R.calls.items || []), ...r.items] : r.items, total: r.total, more: r.more };
   } catch (e) { R.calls = { ...R.calls, loading: false, error: e.message }; }
   if (route() === "improve") render();
+}
+// ---------- Call review (+/-) and error frequency ----------
+async function loadReviews(main) { try { R.rev = { agentId: main.id, ...(await api("GET", `/agents/${encodeURIComponent(main.id)}/reviews`)) }; if (route() === "improve" && R.tab === "calls") render(); } catch (_) { } }
+const reviewOf = (agentId, iid) => R.rev && (R.rev.items || []).find(x => x.agentId === agentId && x.iid === iid);
+// Which kinds of calls get which mistakes: mistake category x call type, one hue, darker = more.
+function errorFrequency(main) {
+  const V = R.rev && R.rev.agentId === main.id ? R.rev : null;
+  if (!V || !V.items.length) return "";
+  const minus = V.items.flatMap(x => x.minus.map(cat => ({ cat, type: x.callType || "Other" })));
+  const calls = V.items.length, plus = V.items.reduce((n, x) => n + x.plus, 0);
+  const head = `<div class="row" style="justify-content:space-between"><h3>Mistakes on reviewed calls</h3><span class="small muted">${calls} call${calls === 1 ? "" : "s"} reviewed${V.items.some(x => x.uat) ? ` (incl. ${V.items.filter(x => x.uat).length} UAT)` : ""} · <b>+${plus}</b> good · <b>−${minus.length}</b> mistake${minus.length === 1 ? "" : "s"}</span></div>`;
+  if (!minus.length) return `<div class="panel stack ef">${head}<div class="small muted">No mistakes on the reviewed calls.</div></div>`;
+  const cats = (V.categories || []).filter(c => minus.some(m => m.cat === c)).sort((a, b) => minus.filter(m => m.cat === b).length - minus.filter(m => m.cat === a).length);
+  const types = (V.callTypes || []).filter(t => minus.some(m => m.type === t));
+  const n = (c, t) => minus.filter(m => m.cat === c && (t == null || m.type === t)).length;
+  const max = Math.max(1, ...cats.flatMap(c => types.map(t => n(c, t))));
+  const cell = (c, t) => { const v = n(c, t); if (!v) return `<td class="ef-c ef-0" title="${esc(c)} · ${esc(t)}: none"></td>`; const k = Math.round(14 + 66 * v / max);
+    return `<td class="ef-c" style="background:color-mix(in srgb,var(--accent) ${k}%,var(--surface));${k > 52 ? "color:var(--accent-ink)" : ""}" title="${esc(c)} on ${esc(t)} calls: ${v}">${v}</td>`; };
+  const tmax = Math.max(...cats.map(c => n(c)));
+  return `<div class="panel stack ef">${head}
+   <div class="tbl-wrap ef-wrap"><table class="ef-t"><thead><tr><th>Mistake</th>${types.map(t => `<th class="ef-h" title="${esc(t)}"><span>${esc(t)}</span></th>`).join("")}<th>All calls</th></tr></thead>
+   <tbody>${cats.map(c => `<tr><th scope="row">${esc(c)}</th>${types.map(t => cell(c, t)).join("")}<td class="ef-tot"><span class="ef-bar"><i style="width:${Math.round(100 * n(c) / tmax)}%"></i></span><b>${n(c)}</b></td></tr>`).join("")}</tbody></table></div>
+   <div class="small muted">Rows: what went wrong. Columns: what kind of call it was. Darker means more often.</div></div>`;
+}
+function reviewPanel(agent) {
+  const K = R.call, rv = K.review, busy = K.reviewing;
+  const obs = `<label class="f">${rv ? "More observations" : "Your observations"} <span class="hint">(one per line; each becomes + or −)</span><textarea id="rv-obs" rows="3" placeholder="e.g. Agent repeated the amount three times">${esc(K.obsDraft || "")}</textarea></label>`;
+  if (!rv) return `<div class="panel stack rv">${obs}<div class="row" style="gap:8px"><button class="btn primary ai" data-act="rv-run" ${aiOn() && canDo("edit") && !busy ? "" : "disabled"}>${busy ? "Reviewing…" : "Review this call"}</button><span class="small muted">The AI reads the transcript against the prompt this call ran on, adds your observations, and marks each point + or −.</span></div></div>`;
+  const items = rv.items.map((x, i) => ({ ...x, i }));
+  const plus = items.filter(x => x.sign === "+"), minus = items.filter(x => x.sign === "-");
+  const sel = K.rvSel || new Set(minus.filter(x => !x.addedAs).map(x => x.i));
+  const line = x => x.turn != null ? ` <a href="#" class="small" data-act="rv-turn" data-t="${x.turn}">line ${x.turn + 1}</a>` : "";
+  return `<div class="panel stack rv">
+   <div class="row" style="justify-content:space-between"><div><b>Review</b> <span class="chip">${esc(rv.callType || "Other")}</span> <span class="small muted">${esc(rv.summary || "")}</span></div><span class="small muted">against ${esc(rv.diagnosedOn || "")}</span></div>
+   ${minus.length ? `<div class="stack" style="gap:8px">${minus.map(x => `<div class="rv-item minus"><label class="check" style="align-items:flex-start">${x.addedAs ? `<span class="rv-s">−</span>` : `<input type="checkbox" data-act-check="rv-sel" data-i="${x.i}" ${sel.has(x.i) ? "checked" : ""}><span class="rv-s">−</span>`}<span><span class="rv-h"><b>${esc(x.text)}</b>${line(x)}<span class="chip">${esc(x.category || "")}</span>${x.fromObservation ? `<span class="chip">your note</span>` : ""}${x.addedAs ? `<span class="small" style="color:var(--accent)">✓ in Changes</span>` : ""}</span>
+      <div class="small"><b>Why:</b> ${x.cause === "missing" ? "the prompt has no rule for this. " : x.cause === "ignored" ? "the prompt says so, but the agent didn't follow it. " : ""}${esc(x.why)}</div>
+      ${x.quote ? `<div class="rv-q small" title="${x.quoteFound ? "Found word for word in the prompt" : "Not found word for word"}">${mdInline(x.quote)}</div>` : ""}${x.fix ? `<div class="small muted"><b>Fix:</b> ${esc(x.fix)}</div>` : ""}</span></label></div>`).join("")}</div>` : `<div class="small muted">No mistakes found on this call.</div>`}
+   ${plus.length ? `<div class="stack" style="gap:6px">${plus.map(x => `<div class="rv-item plus"><span class="rv-s">+</span><span><span class="rv-h">${esc(x.text)}${line(x)}${x.fromObservation ? `<span class="chip">your note</span>` : ""}</span></span></div>`).join("")}</div>` : ""}
+   ${minus.some(x => !x.addedAs) && canDo("edit") ? `<div class="row" style="gap:8px"><button class="btn sm primary" data-act="rv-fixes" ${sel.size ? "" : "disabled"}>Add ${sel.size} mistake${sel.size === 1 ? "" : "s"} to Changes</button><span class="small muted">They arrive already placed in ${esc((mainAgent() || agent).name)}'s prompt, ready to draft a fix.</span></div>` : ""}
+   <details ${K.obsDraft ? "open" : ""}><summary class="small muted">Add observations and review again</summary><div class="stack" style="gap:8px;margin-top:8px">${obs}<div><button class="btn sm ai" data-act="rv-run" ${aiOn() && canDo("edit") && !busy ? "" : "disabled"}>${busy ? "Reviewing…" : "Review again"}</button></div></div></details>
+  </div>`;
 }
 // One call: the recording on top, the transcript below. Click a time to jump there; flag any line.
 function callView(agent) {
@@ -918,6 +973,7 @@ function callView(agent) {
     <button class="btn sm ghost" data-act="flag-clear">Clear</button><button class="btn primary ai" data-act="flag-group" ${aiOn() ? "" : "disabled"}>${nSel === 1 ? "Find why" : `Find why (${nSel} together)`}</button></div>` : "";
   return `<div class="stack" style="gap:10px">${head}${player}
     ${flags.length ? `<div class="notice ok"><span>${flags.length} diagnosis${flags.length === 1 ? "" : "es"} on this call. They're in <a href="#" data-act="tab" data-t="changes">Make a change</a>, where you fix several together in one new version.</span></div>` : ""}
+    ${reviewPanel(agent)}
     <div class="transcript">${turns || `<div class="empty">No transcript for this call.</div>`}</div>${tray}</div>`;
 }
 const CAUSE = { missing: "Prompt doesn't cover it", unclear: "Rule is unclear", conflict: "Rules conflict", ignored: "Rule exists, agent ignored it", data: "Wrong call data" };
@@ -929,12 +985,15 @@ function diagCard(f) {
    ${m.diagnosis ? `<div><b>Why:</b> ${esc(m.diagnosis)}</div>` : ""}${m.fix ? `<div><b>Fix:</b> ${esc(m.fix)}</div>` : ""}
    <div class="small muted">${f.status === "applied" ? `<span style="color:var(--ok)">Fixed in v${esc(f.appliedIn)}</span>` : f.status === "dismissed" ? "Dismissed" : `Waiting in <a href="#" data-act="tab" data-t="changes">Make a change</a> · goes in ${esc(secTitle(m.section))}`}</div></div>`;
 }
-const curAgent = () => R.agentId && (R.agents || []).find(a => a.id === R.agentId);
+const mainAgent = () => R.agentId && (R.agents || []).find(a => a.id === R.agentId);
+// On the Calls tab, "UAT" switches the calls (list, recordings, transcripts, reviews) to the agent's UAT agent.
+const curAgent = () => { const a = mainAgent(); if (a && R.tab === "calls" && R.callSrc && a.uatAgentId === R.callSrc) return (R.agents || []).find(x => x.id === R.callSrc) || a; return a; };
 async function openCall(agent, id, seekTo) {
   const fb = (R.feedback || []).find(f => f.call && f.call.iid === id);
   const row = ((R.calls && R.calls.items) || []).find(c => c.id === id) || { id, version: fb && fb.call.sarvamVersion, at: fb && fb.call.at };
   R.call = { agentId: agent.id, id, row, loading: true, flagTurn: null, flagNote: "", seekTo: seekTo ?? null };
   render(); window.scrollTo(0, 0);
+  api("GET", `/agents/${encodeURIComponent(agent.id)}/interactions/review?iid=${encodeURIComponent(id)}`).then(rv => { if (R.call && R.call.id === id) { R.call.review = rv; render(); } }).catch(() => { });
   try { R.call.t = await api("GET", `/agents/${encodeURIComponent(agent.id)}/interactions/transcript?iid=${encodeURIComponent(id)}`); R.call.loading = false; }
   catch (e) { R.call.loading = false; R.call.error = e.message; }
   if (R.call && R.call.id === id) { render(); if (R.call.seekTo != null) seekCall(R.call.seekTo); }
@@ -1616,8 +1675,8 @@ const ACT = {
     closeModal(); R.curId = r.promptId; R.tab = "prompt"; toast(`Imported as v${r.v}`); if (route() === "improve") go(); else location.hash = "#improve";
   }, "Importing…"),
   "open-prompt": el => { R.curId = el.dataset.id; R.agentId = null; R.tab = "prompt"; R.editText = null; closeModal(); },
-  "open-agent": el => { R.agentId = el.dataset.id; R.tab = "prompt"; R.viewSections = false; R.viewRaw = false; R.cmpOpen = null; R.editText = null; R.call = null; R.fbSel = new Set(); },
-  tab: el => { R.tab = el.dataset.t; const agent = curAgent(); if (R.tab === "calls" && agent && (!R.calls || R.calls.agentId !== agent.id)) loadCalls(agent); if (R.tab === "settings" && agent && (!R.acfg || R.acfg.agentId !== agent.id)) loadCfg(agent); render(); window.scrollTo(0, 0); },
+  "open-agent": el => { R.agentId = el.dataset.id; R.callSrc = null; R.tab = "prompt"; R.viewSections = false; R.viewRaw = false; R.cmpOpen = null; R.editText = null; R.call = null; R.fbSel = new Set(); },
+  tab: el => { R.tab = el.dataset.t; if (R.tab === "calls" && mainAgent()) loadReviews(mainAgent()); const agent = curAgent(); if (R.tab === "calls" && agent && (!R.calls || R.calls.agentId !== agent.id)) loadCalls(agent); if (R.tab === "settings" && agent && (!R.acfg || R.acfg.agentId !== agent.id)) loadCfg(agent); render(); window.scrollTo(0, 0); },
   // Calls
   "calls-load": () => { const a = curAgent(); const from = $("#c-from").value, to = $("#c-to").value; if (!from || !to || from > to) { toast("Pick a start date on or before the end date."); return; } loadCalls(a, { from, to }); },
   "calls-range": el => loadCalls(curAgent(), { from: dayStr(Date.now() - Number(el.dataset.d) * 864e5), to: dayStr(Date.now()) }),
@@ -1726,6 +1785,14 @@ const ACT = {
   "sp-go": el => run(el, async () => { const id = el.dataset.id, S = R.sp[id]; const ids = el.dataset.all ? S.agents.filter(a => !(a.done && a.done.result === "draft")).map(a => a.id) : [...S.sel];
     if (el.dataset.all && !confirm(`Apply this fix to all ${ids.length} agents? Each gets a draft to approve; nothing goes live by itself.`)) return;
     S.job = await api("POST", `/feedback/${id}/spread`, { agentIds: ids }); render(); spPoll(id); }),
+  "calls-src": el => { R.callSrc = el.dataset.v || null; R.call = null; const a = curAgent(); if (a && (!R.calls || R.calls.agentId !== a.id)) loadCalls(a); render(); },
+  "rv-run": el => run(el, async () => { const K = R.call, a = curAgent(); if (!K || !a) return; const obs = ($("#rv-obs") || {}).value || ""; K.reviewing = true; render();
+    try { K.review = await api("POST", `/agents/${encodeURIComponent(a.id)}/interactions/review`, { iid: K.id, observations: obs, callVersion: K.row && K.row.version, at: K.row && K.row.at }); K.obsDraft = ""; K.rvSel = null; }
+    finally { K.reviewing = false; } render(); loadReviews(mainAgent() || a); }, "Reviewing (about a minute)…"),
+  "rv-turn": el => { const t = document.getElementById(`turn-${el.dataset.t}`); if (t) { t.scrollIntoView({ behavior: "smooth", block: "center" }); t.classList.add("cv-flash"); setTimeout(() => t.classList.remove("cv-flash"), 1600); } },
+  "rv-fixes": el => run(el, async () => { const K = R.call, a = curAgent(), rv = K.review; const sel = K.rvSel || new Set(rv.items.map((x, i) => [x, i]).filter(([x]) => x.sign === "-" && !x.addedAs).map(([, i]) => i));
+    const r = await api("POST", `/agents/${encodeURIComponent(a.id)}/interactions/review/fixes`, { iid: K.id, indexes: [...sel] }); K.review = r.review; K.rvSel = null; render();
+    toast(`${r.added} mistake${r.added === 1 ? "" : "s"} added to ${r.to}'s Changes.`); if (R.cur && R.cur.prompt.id === r.promptId) loadCur(R.curId).catch(() => { }); }),
   "in-mode": el => { R.inMode = el.dataset.m; render(); },
   jump: el => { const t = document.getElementById(el.dataset.to); if (t) t.scrollIntoView({ behavior: "smooth", block: "start" }); },
   "cv-jump": el => { const t = document.getElementById(el.dataset.to); if (t) { t.scrollIntoView({ behavior: "smooth", block: "center" }); t.parentElement.classList.add("cv-flash"); setTimeout(() => t.parentElement.classList.remove("cv-flash"), 1600); } },
@@ -1899,6 +1966,7 @@ document.addEventListener("input", e => {
   if (el.dataset.bind && el.type !== "checkbox" && el.tagName !== "SELECT") { let v = el.value; if (el.type === "number") v = Number(v) || 0; setPath(L.cfg, el.dataset.bind, v); R.aiReview = null; commit(false); return; }
   if (el.dataset.kb) { setPath(L.cfg.kb, el.dataset.kb, el.value); saveLocal(); refreshInsights(); return; }
   if (el.dataset.tocJump != null) { const t = document.getElementById(el.value); if (t) t.scrollIntoView({ behavior: "smooth", block: "start" }); el.value = ""; return; }
+  if (el.id === "rv-obs" && R.call) { R.call.obsDraft = el.value; return; }
   if (el.dataset.agQ != null) { R.agQ = el.value; render(); const q = $("#ag-q"); if (q) { q.focus(); q.setSelectionRange(q.value.length, q.value.length); } return; }
   const a = el.dataset.actInput;
   if (a === "channels") { L.cfg.policy.channels = el.value.split(",").map(s => s.trim()).filter(Boolean); commit(false); }
@@ -1922,6 +1990,7 @@ document.addEventListener("change", e => {
   if (el.dataset.bind && (el.type === "checkbox" || el.tagName === "SELECT")) { setPath(L.cfg, el.dataset.bind, el.type === "checkbox" ? el.checked : el.value); R.aiReview = null; commit(); return; }
   if (el.dataset.bind) return;
   const c = el.dataset.actCheck;
+  if (c === "rv-sel" && R.call && R.call.review) { const rv = R.call.review; R.call.rvSel = R.call.rvSel || new Set(rv.items.map((x, i) => [x, i]).filter(([x]) => x.sign === "-" && !x.addedAs).map(([, i]) => i)); el.checked ? R.call.rvSel.add(+el.dataset.i) : R.call.rvSel.delete(+el.dataset.i); render(); return; }
   if (c === "sp-sel") { const S = R.sp[el.dataset.id]; if (S) { el.checked ? S.sel.add(el.dataset.a) : S.sel.delete(el.dataset.a); render(); } return; }
   if (c === "kbd-on") { const D = kbImp().draft; if (D) { D[el.dataset.kind][+el.dataset.i].on = el.checked; render(); } return; }
   if (c === "kbd-oos") { const D = kbImp().draft; if (D) D.useOos = el.checked; return; }
@@ -1997,6 +2066,7 @@ async function boot() {
   $("#aiState").innerHTML = `<span class="dot ${on ? "on" : "off"}"></span><span>${on ? "AI ready" : "AI off"}</span>`;
   $("#aiState").title = on ? `AI model: ${R.health.llm.join(" → ")}` : "No AI model configured: feedback is mapped by keyword rules and drafting is off.";
   api("GET", "/approvals").then(r => { R.approvals = r.items; updateBadge(); }).catch(() => { });
+  api("GET", "/sarvam/status").then(r => { R.sarvam = r; }).catch(() => { });
   go();
 }
 loadLocal();

@@ -349,6 +349,83 @@ r.get('/agents/:id/interactions/audio', h(async (req, res) => {
 // Flag a mistake at one turn of a call. The AI reads the exact prompt version that handled the call,
 // finds what caused it and suggests the fix; the result lands in "Make a change" as a feedback item,
 // so several flagged calls can be fixed together in one new version.
+// ---------- Call review (+/-) and error frequency ----------
+// The prompt an agent had on a given call: the builder's copy of that Sarvam version, else read from Sarvam, else the live one.
+async function promptForCall(a, sv) {
+  const prompt = (await db.list('prompts')).find(p => p.agentId === a.id);
+  if (!prompt) throw fail(409, `Load ${a.name}'s prompt first.`);
+  const versions = (await db.list('versions', v => v.promptId === prompt.id)).sort((x, y) => x.createdAt.localeCompare(y.createdAt));
+  const latest = versions[versions.length - 1], live = versions.find(v => v.status === 'live');
+  const known = sv && versions.find(v => Number(v.sarvamVersion) === Number(sv) && v.sarvamText);
+  let text = known ? known.sarvamText : null, note = '';
+  if (!text && sv) { try { text = (await sarvam.promptText(a.sarvamAppId, sv)).text; } catch (_) { /* below */ } }
+  if (!text) { text = (live && live.sarvamText) || (pushLib.sarvamTextFor(live, latest) || {}).text || ''; note = sv ? ` (Sarvam v${sv} couldn't be read; the live prompt was used)` : ''; }
+  if (!text) throw fail(409, `${a.name}'s prompt text isn't loaded. Reload it from Sarvam first.`);
+  return { prompt, latest, text, note };
+}
+// The main agent a call's findings belong to: a UAT agent's findings go to the agent it tests.
+async function mainAgentOf(a) { return (await db.list('agents')).find(x => x.uatAgentId === a.id) || a; }
+const reviewId = (a, iid) => `${a.id}::${iid}`;
+
+r.post('/agents/:id/interactions/review', h(async (req, res) => {
+  if (!can(req.user, 'edit')) throw fail(403, 'Your role cannot review calls.');
+  const a = await loadAgent(req.params.id), iid = iidOf(req);
+  const main = await mainAgentOf(a); await require('../lib/agentKind').fromAgent(main);
+  const { observations, callVersion, at } = req.body || {};
+  const old = await db.get('callReviews', reviewId(a, iid));
+  const allObs = [...new Set([...((old && old.observations) || []), ...String(observations || '').split(/\r?\n/).map(x => x.trim()).filter(Boolean)])];
+  const t = await transcriptFor(a, iid);
+  const sv = Number(callVersion) || (old && old.version) || null;
+  const pc = await promptForCall(a, sv);
+  const out = await ai.reviewCall({ text: pc.text, turns: t.turns, observations: allObs.join('\n'), callInfo: [sv ? `handled by Sarvam version ${sv}` : '', at ? `on ${at}` : '', a.id !== main.id ? `a UAT test call for ${main.name}` : ''].filter(Boolean).join(', ') });
+  const doc = await db.put('callReviews', { id: reviewId(a, iid), agentId: a.id, mainAgentId: main.id, iid, at: at || (old && old.at) || null, version: sv, callType: out.callType, summary: out.summary,
+    items: out.items.map(x => ({ ...x, addedAs: ((old && old.items) || []).find(o => o.text === x.text && o.addedAs) ? old.items.find(o => o.text === x.text).addedAs : null })),
+    observations: allObs, diagnosedOn: sv ? `Sarvam v${sv}${pc.note}` : `live prompt${pc.note}`, by: req.user.email, reviewedAt: now(), provider: out.provider, uat: a.id !== main.id });
+  await audit(req.user, 'call.review', { agent: a.id, iid, plus: out.items.filter(x => x.sign === '+').length, minus: out.items.filter(x => x.sign === '-').length });
+  res.json(doc);
+}));
+r.get('/agents/:id/interactions/review', h(async (req, res) => { const a = await loadAgent(req.params.id); res.json((await db.get('callReviews', reviewId(a, iidOf(req)))) || null); }));
+
+// Every reviewed call of this agent and of its UAT agent, for the error frequency chart.
+r.get('/agents/:id/reviews', h(async (req, res) => {
+  const a = await loadAgent(req.params.id);
+  const ids = new Set([a.id, a.uatAgentId].filter(Boolean));
+  const list = await db.list('callReviews', x => ids.has(x.agentId) || x.mainAgentId === a.id);
+  await require('../lib/agentKind').fromAgent(a);
+  res.json({ items: list.map(x => ({ id: x.id, agentId: x.agentId, iid: x.iid, at: x.at, version: x.version, callType: x.callType, uat: !!x.uat, plus: x.items.filter(i => i.sign === '+').length,
+    minus: x.items.filter(i => i.sign === '-').map(i => i.category) })), categories: ai.MISTAKE_CATS, callTypes: ai.CALL_TYPES[require('../lib/agentKind').kind().t] });
+}));
+
+// Chosen "-" points become feedback items on the main agent, already placed in its prompt: fix them on Changes.
+r.post('/agents/:id/interactions/review/fixes', h(async (req, res) => {
+  if (!can(req.user, 'edit')) throw fail(403, 'Your role cannot add feedback.');
+  const a = await loadAgent(req.params.id), iid = iidOf(req);
+  const rv = await db.get('callReviews', reviewId(a, iid));
+  if (!rv) throw fail(404, 'Review this call first.');
+  const main = await mainAgentOf(a);
+  const prompt = (await db.list('prompts')).find(p => p.agentId === main.id);
+  if (!prompt) throw fail(409, `Load ${main.name}'s prompt first.`);
+  const versions = (await db.list('versions', v => v.promptId === prompt.id)).sort((x, y) => x.createdAt.localeCompare(y.createdAt));
+  const latest = versions[versions.length - 1];
+  const t = await transcriptFor(a, iid).catch(() => ({ turns: [] }));
+  const picks = ((req.body || {}).indexes || []).map(Number).filter(i => rv.items[i] && rv.items[i].sign === '-' && !rv.items[i].addedAs);
+  if (!picks.length) throw fail(400, 'Pick at least one mistake that is not added yet.');
+  // Where in the prompt: the section holding the quoted passage, else the AI places it when you click "Find where each item goes".
+  const secOf = q => { if (!q) return null; const n = s => String(s).replace(/<!--.*?-->/g, '').replace(/\s+/g, ' ').trim(); const nq = n(q); return latest.order.find(sec => n(latest.sections[sec] || '').includes(nq)) || null; };
+  const made = [];
+  for (const i of picks) {
+    const x = rv.items[i], sec = secOf(x.quote), ti = x.turn;
+    const excerpt = ti != null ? t.turns.slice(Math.max(0, ti - 2), ti + 2).map((y, k) => ({ i: Math.max(0, ti - 2) + k, role: y.role, text: String(y.text).slice(0, 600) })) : null;
+    const item = await db.put('feedback', { id: uid(), promptId: prompt.id, text: x.text, source: rv.uat ? 'UAT call review' : 'Call review', status: sec ? 'mapped' : 'new', by: req.user.email,
+      map: sec ? { section: sec, block: '', layer: 'L6', type: x.category || 'behaviour', severity: 'medium', scope: 'client', cause: x.cause, diagnosis: x.why, fix: x.fix, quotes: x.quote ? [{ text: x.quote }] : [], via: 'ai', diagnosedOn: rv.diagnosedOn } : null,
+      mappedAgainst: sec ? latest.v : undefined, call: { iid, at: rv.at, turn: ti, start: ti != null && t.turns[ti] ? t.turns[ti].start : null, sarvamVersion: rv.version, excerpt, agentId: a.id, uat: rv.uat } });
+    rv.items[i].addedAs = item.id; made.push(item.id);
+  }
+  await db.put('callReviews', rv);
+  await audit(req.user, 'call.review_fixes', { agent: a.id, main: main.id, iid, items: made.length });
+  res.json({ added: made.length, to: main.name, promptId: prompt.id, review: rv });
+}));
+
 r.post('/agents/:id/interactions/flag', h(async (req, res) => {
   if (!can(req.user, 'edit')) throw fail(403, 'Your role cannot add feedback.');
   const a = await loadAgent(req.params.id);
