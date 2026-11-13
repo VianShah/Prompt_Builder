@@ -1,5 +1,6 @@
 // The module library, kept as JSON files in the git repo (until it moves to a database):
-//   library/modules/<MODULE-ID>/<version>.json      one file per module version
+//   library/modules/<MODULE-ID>/<version>.json      one file per module (rule set) version
+//   library/skeletons/<agent-type>.json             the confirmed section structure per agent type
 //
 // With GITHUB_TOKEN and GITHUB_REPO set (the deployed builder), the files live on a branch of the
 // GitHub repo (GITHUB_LIBRARY_BRANCH, default "module-library"): they are read from it at start, and
@@ -11,7 +12,7 @@ const fs = require('fs');
 const path = require('path');
 const config = require('../config');
 
-const DIR = 'library/modules';
+const DIR = 'library';
 const ROOT = path.join(__dirname, '..', '..');
 const gh = () => !!(config.github.token && config.github.repo);
 let docs = new Map();        // id -> module doc
@@ -20,7 +21,8 @@ let queue = Promise.resolve();
 let lastError = null;
 let loadFailed = false;  // GitHub couldn't be read at start: saving is refused, so nothing there is overwritten blind
 
-const fileOf = d => `${DIR}/${safe(d.moduleId)}/${safe(d.v)}.json`;
+const fileOf = d => d._kind === 'skeleton' ? `${DIR}/skeletons/${safe(d.agentType)}.json` : `${DIR}/modules/${safe(d.moduleId)}/${safe(d.v)}.json`;
+const kindOf = d => d._kind || 'module';
 const safe = s => String(s || 'x').replace(/[^A-Za-z0-9._-]/g, '-');
 const clone = o => JSON.parse(JSON.stringify(o));
 const err = (msg, status) => Object.assign(new Error(msg), { code: 'library', status: 502, publicMessage: msg, ghStatus: status });
@@ -68,14 +70,15 @@ async function loadGitHub() {
 
 function loadLocal() {
   const out = new Map(), base = path.join(ROOT, DIR);
-  if (!fs.existsSync(base)) return out;
-  for (const m of fs.readdirSync(base)) {
-    const dir = path.join(base, m);
-    if (!fs.statSync(dir).isDirectory()) continue;
-    for (const f of fs.readdirSync(dir).filter(x => x.endsWith('.json'))) {
-      try { const d = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8')); if (d && d.id) out.set(d.id, d); } catch (_) { console.warn('[library] skipped unreadable', path.join(m, f)); }
+  const walk = dir => {
+    if (!fs.existsSync(dir)) return;
+    for (const f of fs.readdirSync(dir)) {
+      const p = path.join(dir, f);
+      if (fs.statSync(p).isDirectory()) walk(p);
+      else if (f.endsWith('.json')) { try { const d = JSON.parse(fs.readFileSync(p, 'utf8')); if (d && d.id) out.set(d.id, d); } catch (_) { console.warn('[library] skipped unreadable', path.relative(base, p)); } }
     }
-  }
+  };
+  walk(base);
   return out;
 }
 
@@ -122,7 +125,8 @@ function writeLocal(file, d) {
 const serial = fn => { const run = queue.then(fn, fn); queue = run.catch(() => { }); return run; };
 
 async function get(id) { const d = docs.get(id); return d ? clone(d) : null; }
-async function list() { return [...docs.values()].map(clone).sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt))); }
+// kind: 'module' (rule sets) or 'skeleton' (section structure per agent type).
+async function list(kind = 'module') { return [...docs.values()].filter(d => kindOf(d) === kind).map(clone).sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt))); }
 async function put(doc) {
   if (!doc.id) throw new Error('doc.id required');
   if (loadFailed) throw err(`${lastError}. Restart the service once GitHub is reachable.`);
@@ -149,6 +153,6 @@ async function del(id) {
   });
   docs.delete(id);
 }
-const status = () => ({ kind: gh() ? 'github' : 'local-files', repo: gh() ? config.github.repo : null, branch: gh() ? config.github.branch : null, path: DIR, modules: docs.size, loaded: !loadFailed, lastError });
+const status = () => ({ kind: gh() ? 'github' : 'local-files', repo: gh() ? config.github.repo : null, branch: gh() ? config.github.branch : null, path: DIR, modules: [...docs.values()].filter(d => kindOf(d) === 'module').length, loaded: !loadFailed, lastError });
 
 module.exports = { init, get, list, put, del, status };

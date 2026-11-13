@@ -550,3 +550,36 @@ label.f > span.hint{font-size:12.5px}
 /* selected option in a toggle: clearly marked in light and dark */
 .seg{background:transparent;border-color:var(--line2)}
 .seg button[aria-pressed="true"]{background:var(--accent-soft);color:var(--accent);box-shadow:none;font-weight:500}
+
+/* ---- New prompt (3 steps) and the Library page ---- */
+.np-steps{display:flex;align-items:center;gap:10px;margin:-8px 0 28px;flex-wrap:wrap}
+.np-steps button{display:inline-flex;align-items:center;gap:8px;border:0;background:none;padding:4px 0;color:var(--muted);font-size:14px;cursor:pointer}
+.np-steps button[aria-current="step"]{color:var(--ink);font-weight:600}
+.np-steps button:disabled{opacity:.45;cursor:not-allowed}
+.np-steps .n{width:22px;height:22px;border-radius:50%;display:inline-grid;place-items:center;font-size:12px;border:1px solid var(--line2)}
+.np-steps button[aria-current="step"] .n{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+.np-steps .sep{color:var(--line2)}
+.np-body{max-width:820px}
+.np-sec{display:flex;flex-direction:column;gap:10px;padding:18px 0;border-top:1px solid var(--line)}
+.np-sec > summary{cursor:pointer}
+.np-sh{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+.np-sh h3{font-size:15px}
+.np-rule{display:flex;flex-direction:column;gap:6px;padding:10px 12px;border:1px solid var(--line);border-radius:var(--r-sm);background:var(--surface)}
+.np-rule.on{border-color:var(--accent)}
+.np-text{font-size:14px;line-height:1.6;white-space:normal;overflow-wrap:anywhere}
+.np-acts{display:flex;align-items:center;gap:12px;font-size:12.5px}
+.np-acts .sp{flex:1}
+.np-acts a{color:var(--muted);text-decoration:none}
+.np-acts a:hover{color:var(--accent)}
+.np-acts a.danger:hover,a.danger{color:var(--err)}
+.np-lib{display:flex;flex-direction:column;gap:2px;padding:12px;border-radius:var(--r-sm);background:var(--sunk)}
+.np-entry{padding:8px 4px;border-top:1px solid var(--line)}
+.np-entry:first-of-type{border-top:0}
+.np-et{font-weight:500;color:var(--ink);text-decoration:none;font-size:13.5px}
+.np-et:hover{color:var(--accent)}
+.lib-sec{display:flex;flex-direction:column;gap:2px;padding:10px 0}
+.lib-row{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:12px;align-items:center;padding:8px 10px;border-radius:var(--r-sm);text-decoration:none;color:inherit}
+.lib-row:hover{background:var(--hover)}
+.lib-row .t{font-size:13.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sk-row{display:grid;grid-template-columns:minmax(120px,1fr) minmax(160px,2fr) auto auto auto auto auto;gap:8px;align-items:center}
+@media (max-width:760px){.sk-row{grid-template-columns:1fr 1fr}.lib-row{grid-template-columns:1fr auto}}

@@ -487,7 +487,9 @@ r.post('/agents/clone', h(async (req, res) => {
 r.patch('/agents/:id', h(async (req, res) => {
   if (!can(req.user, 'approve')) throw fail(403, 'Only approvers and admins can change this.');
   const a = await loadAgent(req.params.id);
-  const { uatAgentId, template, templateNote } = req.body || {};
+  const { uatAgentId, template, templateNote, agentType } = req.body || {};
+  // Collections or sales: decides which skeleton and rule library the agent belongs to.
+  if (agentType !== undefined) { if (!['collections', 'sales'].includes(agentType)) throw fail(400, 'Agent type is collections or sales.'); a.agentType = agentType; }
   if (uatAgentId !== undefined) {
     if (uatAgentId && (uatAgentId === a.id || !(await db.get('agents', uatAgentId)))) throw fail(400, 'Pick a different agent as the UAT agent.');
     a.uatAgentId = uatAgentId || null;
@@ -500,7 +502,7 @@ r.patch('/agents/:id', h(async (req, res) => {
     a.templateBy = template ? req.user.email : null; a.templateAt = template ? now() : null;
   }
   await db.put('agents', a);
-  await audit(req.user, 'agent.update', { agent: a.id, uatAgentId: a.uatAgentId, template: a.template });
+  await audit(req.user, 'agent.update', { agent: a.id, uatAgentId: a.uatAgentId, template: a.template, agentType: a.agentType });
   res.json(a);
 }));
 
