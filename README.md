@@ -55,6 +55,20 @@ After signing in, **Load all prompts** on the Agents page copies every agent's c
 - **Agent page:** tabs **Calls**, **Prompt**, **Changes**. Settings, History and rollback, and the agent actions are under ⋯.
 - **Library:** structure and rules per agent type (below). **Approvals:** review and push.
 
+### Knowledge base from documents
+
+Drop files or whole folders when adding a Knowledge base section in New prompt (or *Add from documents* on the Library page). Supported:
+
+| Type | How it's read |
+|---|---|
+| Excel / CSV (every sheet) | FAQ sheets (question and answer columns) and two-column fact sheets go straight in; other sheets are read by the AI |
+| Word, text, Markdown, JSON, HTML | Read by the AI |
+| PDF with text | Read by the AI |
+| **Scanned PDF**, **pictures** (JPG, PNG, GIF, WebP) | Each page or picture is read by **Claude** (vision), which returns the text, tables, fees and conditions it sees |
+| **PowerPoint** (.pptx) | Slide text and speaker notes are read directly; pictures inside slides are read by Claude |
+
+Pictures and scans need **Claude on Bedrock** (`AWS_BEARER_TOKEN_BEDROCK`); the GLM and Gemini fallbacks are text only. Without it those files are listed with a clear message and everything else still imports. Pictures are shrunk before upload; at most 40 pictures or scanned pages are read per import (and 8 per call). **Videos and audio aren't read yet.** Everything found is shown for review; nothing is added until ticked.
+
 ### Library and New prompt
 
 Each agent type (**Collections**, **Sales**) has its own library, on the **Library** page:

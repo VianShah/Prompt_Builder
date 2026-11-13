@@ -182,6 +182,8 @@ const R = { sarvam: null, me: null, health: null, agents: null, prompts: null, a
 try { R.diffMode = localStorage.getItem("pb-diff-mode") || "split"; } catch (_) { R.diffMode = "split"; }
 const canDo = a => R.me && ({ edit: ["editor", "approver", "admin"], approve: ["approver", "admin"], golive: ["approver", "admin"], rollback: ["approver", "admin"] }[a] || []).includes(R.me.role);
 const aiOn = () => R.health && R.health.llm && R.health.llm.length > 0;
+// Reading pictures and scans needs Claude (the other providers here are text only).
+const visionOn = () => !!(R.health && R.health.vision);
 
 // ---------- Auth ----------
 function showLogin() { $("#shell").hidden = true; $("#login").hidden = false; }
@@ -428,13 +430,69 @@ const closeModal = () => { $("#modal").hidden = true; $("#modal").innerHTML = ""
 // knowledge base until the user ticks what to keep.
 const PDFJS_SRC = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js";
 const PDFJS_WORKER = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
-const KB_EXT = /\.(xlsx|xls|csv|docx|pdf|txt|md|json|html?)$/i;
+const KB_EXT = /\.(xlsx|xls|csv|docx|pptx|pdf|txt|md|json|html?|jpe?g|png|gif|webp|bmp)$/i;
+const KB_IMG = /\.(jpe?g|png|gif|webp|bmp)$/i;
+const JSZIP_SRC = "https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js";
+const KB_MAX_IMAGES = 40; // pictures and scanned pages read by the AI per import (the rest are skipped, and say so)
 const KB_MAX_FILES = 60, KB_MAX_CHARS = 600000, KB_BATCH = 30000;
-const kbImp = () => R.kbImp || (R.kbImp = { files: [], progress: null, draft: null, paste: "" });
+const kbImp = () => R.kbImp || (R.kbImp = { files: [], progress: null, draft: null, paste: "", imgCount: 0 });
 const KB_KIND_T = { product: "Product", policy: "Policy", process: "Process", contact: "Contact", other: "Other" };
 const kbNorm = t => String(t || "").toLowerCase().replace(/[^a-z0-9ऀ-ॿ]+/g, " ").trim();
+// Pictures are shrunk before they're sent (phone photos are many MB): longest side 1568px, JPEG.
+async function imageToJpeg(blob, maxSide = 1568, quality = 0.82) {
+  const bmp = await createImageBitmap(blob);
+  const k = Math.min(1, maxSide / Math.max(bmp.width, bmp.height));
+  const c = document.createElement("canvas"); c.width = Math.max(1, Math.round(bmp.width * k)); c.height = Math.max(1, Math.round(bmp.height * k));
+  const g = c.getContext("2d"); g.fillStyle = "#fff"; g.fillRect(0, 0, c.width, c.height); g.drawImage(bmp, 0, 0, c.width, c.height);
+  const url = c.toDataURL("image/jpeg", quality); bmp.close && bmp.close();
+  return { format: "jpeg", data: url.slice(url.indexOf(",") + 1) };
+}
+// Claude reads the images (up to 8 per call, kept small) and returns the text they carry.
+async function readImagesText(images, label, onStep) {
+  const out = []; let batch = [], size = 0;
+  const flush = async () => { if (!batch.length) return; const r = await api("POST", "/ai/read-images", { images: batch, label }); out.push(r.text); batch = []; size = 0; if (onStep) onStep(); };
+  for (const im of images) { if (batch.length >= 8 || size + im.data.length > 2.6e6) await flush(); batch.push(im); size += im.data.length; }
+  await flush();
+  return out.join("\n\n").replace(/^Image \d+:\s*$/gm, "").trim();
+}
+const imgBudget = () => { const I = kbImp(); return Math.max(0, KB_MAX_IMAGES - (I.imgCount || 0)); };
+// PowerPoint: slide text and speaker notes come straight from the file; pictures inside slides are read by the AI.
+async function readPptx(file, name) {
+  await loadScript(JSZIP_SRC);
+  const zip = await JSZip.loadAsync(await file.arrayBuffer());
+  const num = n => Number((n.match(/(\d+)\.xml$/) || [])[1] || 0);
+  const slides = Object.keys(zip.files).filter(n => /^ppt\/slides\/slide\d+\.xml$/.test(n)).sort((a, b) => num(a) - num(b));
+  const notes = Object.keys(zip.files).filter(n => /^ppt\/notesSlides\/notesSlide\d+\.xml$/.test(n));
+  const txt = async n => { const xml = await zip.file(n).async("string"); return [...xml.matchAll(/<a:p[ >][\s\S]*?<\/a:p>/g)].map(p => [...p[0].matchAll(/<a:t[^>]*>([\s\S]*?)<\/a:t>/g)].map(t => t[1]).join("")).filter(Boolean).join("\n").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&apos;/g, "'"); };
+  const parts = [];
+  for (const sn of slides) { const t = await txt(sn); const nn = notes.find(x => num(x) === num(sn)); const nt = nn ? await txt(nn) : ""; if (t.trim() || nt.trim()) parts.push(`Slide ${num(sn)}:\n${t.trim()}${nt.trim() ? `\nSpeaker notes: ${nt.trim()}` : ""}`); }
+  let text = parts.join("\n\n"), pics = 0;
+  const media = Object.keys(zip.files).filter(n => /^ppt\/media\/.+\.(jpe?g|png|gif|webp|bmp)$/i.test(n));
+  if (media.length && visionOn() && imgBudget() > 0) {
+    const take = media.slice(0, imgBudget()), images = [];
+    for (const m of take) { try { const b = await zip.file(m).async("blob"); if (b.size > 4000) images.push(await imageToJpeg(b)); } catch (_) { /* skip an unreadable picture */ } }
+    if (images.length) { kbImp().imgCount = (kbImp().imgCount || 0) + images.length; pics = images.length; const t = await readImagesText(images, `${name} (pictures in the slides)`); if (t && !/^No information\.?$/i.test(t)) text += `${text ? "\n\n" : ""}Pictures in the slides:\n${t}`; }
+  }
+  return { text, note: pics ? `${slides.length} slides + ${pics} picture${pics === 1 ? "" : "s"} read` : `${slides.length} slides` };
+}
+// A PDF with no text layer: each page is drawn to an image and read by the AI.
+async function readScannedPdf(doc, name) {
+  const pages = Math.min(doc.numPages, imgBudget());
+  if (pages < 1) throw new Error(`Skipped: the limit of ${KB_MAX_IMAGES} pictures and scanned pages per import is reached.`);
+  const images = [];
+  for (let i = 1; i <= pages; i++) {
+    const pg = await doc.getPage(i), vp0 = pg.getViewport({ scale: 1 }), scale = Math.min(2.2, 1568 / Math.max(vp0.width, vp0.height)), vp = pg.getViewport({ scale });
+    const c = document.createElement("canvas"); c.width = Math.round(vp.width); c.height = Math.round(vp.height);
+    const g = c.getContext("2d"); g.fillStyle = "#fff"; g.fillRect(0, 0, c.width, c.height);
+    await pg.render({ canvasContext: g, viewport: vp }).promise;
+    const url = c.toDataURL("image/jpeg", 0.8); images.push({ format: "jpeg", data: url.slice(url.indexOf(",") + 1) });
+  }
+  kbImp().imgCount = (kbImp().imgCount || 0) + images.length;
+  const text = await readImagesText(images, name);
+  return { text, note: `scanned: ${pages} page${pages === 1 ? "" : "s"} read by the AI${doc.numPages > pages ? ` (first ${pages} of ${doc.numPages})` : ""}` };
+}
 async function kbReadFile(file, name) {
-  const out = { name, size: file.size, text: "", facts: [], faqs: [] };
+  const out = { name, size: file.size, text: "", facts: [], faqs: [], note: "" };
   if (/\.(xlsx|xls|csv)$/i.test(file.name)) {
     await loadScript(XLSX_SRC);
     const wb = XLSX.read(await file.arrayBuffer(), { type: "array" });
@@ -458,7 +516,18 @@ async function kbReadFile(file, name) {
     const pages = [];
     for (let i = 1; i <= Math.min(doc.numPages, 300); i++) { const c = await (await doc.getPage(i)).getTextContent(); pages.push(c.items.map(x => x.str + (x.hasEOL ? "\n" : " ")).join("")); }
     out.text = pages.join("\n\n");
-    if (!out.text.trim()) throw new Error("No text found. It may be a scanned PDF; use a text PDF or a Word file.");
+    if (out.text.replace(/\s/g, "").length < 40 * Math.min(doc.numPages, 3)) { // no text layer: a scan. Read the pages as pictures.
+      if (!visionOn()) throw new Error("A scanned PDF (pictures of pages). Reading it needs Claude on Bedrock, which isn't configured on the server.");
+      const r = await readScannedPdf(doc, name); out.text = r.text; out.note = r.note;
+    }
+  } else if (/\.pptx$/i.test(file.name)) { const r = await readPptx(file, name); out.text = r.text; out.note = r.note; }
+  else if (KB_IMG.test(file.name)) {
+    if (!visionOn()) throw new Error("A picture. Reading it needs Claude on Bedrock, which isn't configured on the server.");
+    if (imgBudget() < 1) throw new Error(`Skipped: the limit of ${KB_MAX_IMAGES} pictures and scanned pages per import is reached.`);
+    if (/\.bmp$/i.test(file.name) === false && file.size < 3000) throw new Error("Too small to hold information (an icon?).");
+    kbImp().imgCount = (kbImp().imgCount || 0) + 1;
+    out.text = await readImagesText([await imageToJpeg(file)], name); out.note = "picture read by the AI";
+    if (/^No information\.?$/i.test(out.text.trim())) throw new Error("No information in this picture (decoration or a photo).");
   } else if (/\.html?$/i.test(file.name)) out.text = new DOMParser().parseFromString(await file.text(), "text/html").body.textContent || "";
   else out.text = await file.text();
   out.text = out.text.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
@@ -487,7 +556,7 @@ async function kbAddFiles(list) {
     catch (err) { e.status = "error"; e.note = err.message || "Couldn't read it."; }
   }
   render();
-  toast(`${added} file${added === 1 ? "" : "s"} read${skipped.length ? ` · ${skipped.length} skipped (only Excel, CSV, Word, PDF, text and markdown, up to ${KB_MAX_FILES} files)` : ""}`);
+  toast(`${added} file${added === 1 ? "" : "s"} read${skipped.length ? ` · ${skipped.length} skipped: ${skipped.slice(0, 3).map(x => x.split("/").pop()).join(", ")}${skipped.length > 3 ? "…" : ""} (not a supported type, or more than ${KB_MAX_FILES} files)` : ""}`);
 }
 const kbChars = I => I.files.filter(f => f.status === "ready").reduce((n, f) => n + (f.text || "").length, 0);
 function kbBatches(I) {
@@ -530,13 +599,13 @@ function kbImportPanel() {
   const tick = (kind, i, x) => `<input type="checkbox" data-act-check="kbd-on" data-kind="${kind}" data-i="${i}" ${x.on ? "checked" : ""}>`;
   return `<div class="panel stack" style="background:var(--sunk);box-shadow:none;border-style:dashed">
    <div><h3>Build it from the client's documents</h3><p class="small muted">Product sheets, policy PDFs, FAQ spreadsheets, whole folders. Excel FAQ sheets (question and answer columns) go straight in; the rest is read by the AI. You review everything before it's added.</p></div>
-   <div class="dropzone" id="kbDrop">Drop files or folders here, or <label style="color:var(--accent);cursor:pointer;text-decoration:underline">choose files<input type="file" id="kbFiles" multiple accept=".xlsx,.xls,.csv,.docx,.pdf,.txt,.md,.json,.html,.htm" hidden></label> · <label style="color:var(--accent);cursor:pointer;text-decoration:underline">choose a folder<input type="file" id="kbFolder" webkitdirectory multiple hidden></label><div class="small" style="margin-top:4px">Excel, CSV, Word, PDF, text or markdown</div></div>
+   <div class="dropzone" id="kbDrop">Drop files or folders here, or <label style="color:var(--accent);cursor:pointer;text-decoration:underline">choose files<input type="file" id="kbFiles" multiple accept=".xlsx,.xls,.csv,.docx,.pptx,.pdf,.txt,.md,.json,.html,.htm,.jpg,.jpeg,.png,.gif,.webp" hidden></label> · <label style="color:var(--accent);cursor:pointer;text-decoration:underline">choose a folder<input type="file" id="kbFolder" webkitdirectory multiple hidden></label><div class="small" style="margin-top:4px">Excel, CSV, Word, PowerPoint, PDF (scanned too), pictures, text or markdown. Pictures and scans are read by the AI.</div></div>
    <details><summary class="small muted">Or paste text (notes, an email, a policy extract)</summary><div class="stack" style="gap:8px;margin-top:8px"><textarea id="kb-paste" rows="4" data-act-input="kb-paste" placeholder="Paste here…">${esc(I.paste)}</textarea><div><button class="btn sm" data-act="kb-paste-add">Add as a source</button></div></div></details>
    ${I.files.length ? `<div class="tbl-wrap"><table><tbody>${I.files.map((f, i) => `<tr><td class="small" style="word-break:break-all">${esc(f.name)}</td>
-     <td class="small muted nowrap">${f.status === "reading" ? "Reading…" : f.status === "error" ? `<span style="color:var(--err)">${esc(f.note || "Couldn't read")}</span>` : [f.faqs && f.faqs.length ? `${f.faqs.length} FAQs` : "", f.facts && f.facts.length ? `${f.facts.length} facts` : "", f.text ? `${fmtN(f.text.length)} characters` : ""].filter(Boolean).join(" · ")}</td>
+     <td class="small muted nowrap">${f.status === "reading" ? "Reading…" : f.status === "error" ? `<span style="color:var(--err)">${esc(f.note || "Couldn't read")}</span>` : [f.faqs && f.faqs.length ? `${f.faqs.length} FAQs` : "", f.facts && f.facts.length ? `${f.facts.length} facts` : "", f.text ? `${fmtN(f.text.length)} characters` : "", f.note || ""].filter(Boolean).join(" · ")}</td>
      <td style="width:30px"><button class="btn sm ghost" data-act="kb-file-del" data-i="${i}" aria-label="Remove">✕</button></td></tr>`).join("")}</tbody></table></div>
     <div class="row" style="gap:10px"><button class="btn primary ${nb ? "ai" : ""}" data-act="kb-build" ${ready.length && !I.progress ? "" : "disabled"}>${I.progress ? `Reading ${I.progress.done} of ${I.progress.total}…` : "Build knowledge base"}</button>
-     <span class="small muted">${ready.length} file${ready.length === 1 ? "" : "s"}${direct ? ` · ${direct} items read directly` : ""}${nb ? ` · ${nb} AI read${nb === 1 ? "" : "s"}${chars > KB_MAX_CHARS ? ` (only the first ${fmtN(KB_MAX_CHARS)} characters)` : ""}` : ""}</span>
+     <span class="small muted">${ready.length} file${ready.length === 1 ? "" : "s"}${direct ? ` · ${direct} items read directly` : ""}${(I.imgCount || 0) ? ` · ${I.imgCount} picture${I.imgCount === 1 ? "" : "s"}/scan${I.imgCount === 1 ? "" : "s"} read` : ""}${nb ? ` · ${nb} AI read${nb === 1 ? "" : "s"}${chars > KB_MAX_CHARS ? ` (only the first ${fmtN(KB_MAX_CHARS)} characters)` : ""}` : ""}</span>
      <a href="#" class="small" data-act="kb-files-clear">Clear</a></div>
     ${I.progress ? `<div class="bar" style="max-width:none;height:6px"><i style="width:${Math.round(100 * I.progress.done / Math.max(1, I.progress.total))}%"></i></div>` : ""}` : ""}
    ${D ? `<div class="stack" style="gap:10px;border-top:1px solid var(--line);padding-top:12px">

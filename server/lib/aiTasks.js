@@ -210,6 +210,19 @@ ${String(notes).slice(0, 20000)}`;
     faqs: (d.faqs || []).filter(x => x && x.q && x.a).map(x => ({ q: String(x.q), a: String(x.a) })), oos: d.oos ? String(d.oos) : '', provider: r.provider };
 }
 
+// Pictures and scanned pages in the client's folder -> the text they carry, as a document the knowledge-base
+// import reads like any other. Claude reads each batch of images; nothing is added until a person ticks it.
+async function readImagesToText({ images, label }) {
+  const list = (Array.isArray(images) ? images : []).slice(0, 8);
+  const prompt = `These ${list.length === 1 ? 'is an image' : `are ${list.length} images`} from a lender's documents (product brochures, rate cards, offer screenshots, policy pages, scanned pages) for a phone voice agent. File: ${String(label || 'images').slice(0, 160)}.
+Transcribe everything that carries information, in reading order: all text, headings, tables (as rows of "column: value"), fees, limits, rates, dates, eligibility and conditions, footnotes, and what a chart or diagram shows. Keep numbers, percentages and currency exactly as printed, and keep the language printed (Hindi stays Hindi).
+Do not describe the design (colours, layout, logos). Do not guess at anything unreadable: write [unreadable] for it. If an image has no information (a photo of a person, decoration), write "No information." for it.
+${list.length > 1 ? 'Start each image with "Image N:" on its own line.' : ''}
+Reply with plain text only.`;
+  const text = await llm.readImages(prompt, list);
+  return { text: String(text || '').trim(), provider: 'Claude (Bedrock)' };
+}
+
 // Knowledge base from documents (product sheets, policy PDFs, FAQ files...). The browser extracts the
 // text and sends it in batches; each batch comes back as facts and FAQs that name the file they came
 // from, for a person to review before anything is added. Only what the documents say is used.
@@ -717,4 +730,4 @@ At most 10 differences, most important first.`;
     differences: (Array.isArray(d.differences) ? d.differences : []).filter(x => x && x.area).slice(0, 10).map(x => ({ area: String(x.area), a: String(x.a || ''), b: String(x.b || ''), risk: ['high', 'medium', 'low'].includes(x.risk) ? x.risk : 'low' })) };
 }
 
-module.exports = { reviewWithFixes, kbFromDocs, SKELETON, factoryMap, factoryAssemble, factoryReview, factoryRevise, diagnoseGroup, buildTests, runTest, optimizePrompt, applyEdits, analyzeTranscript, critiqueFix, mapFeedback, draftFix, review, kbDraft, importPrompt, diagnoseCall, compareSummary };
+module.exports = { readImagesToText, reviewWithFixes, kbFromDocs, SKELETON, factoryMap, factoryAssemble, factoryReview, factoryRevise, diagnoseGroup, buildTests, runTest, optimizePrompt, applyEdits, analyzeTranscript, critiqueFix, mapFeedback, draftFix, review, kbDraft, importPrompt, diagnoseCall, compareSummary };

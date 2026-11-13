@@ -15,6 +15,15 @@ r.post('/ai/kb', h(async (req, res) => {
   if (String(notes || '').trim().length < 20) throw fail(400, 'Paste some product notes first.');
   res.json(await ai.kbDraft({ notes, client, product }));
 }));
+// Pictures and scanned pages: Claude reads them and returns the text they carry (up to 8 images per call).
+r.post('/ai/read-images', h(async (req, res) => {
+  const { images, label } = req.body || {};
+  if (!Array.isArray(images) || !images.length) throw fail(400, 'No images to read.');
+  const ok = images.filter(i => i && /^(jpeg|png|gif|webp)$/.test(i.format) && typeof i.data === 'string' && i.data.length > 100);
+  if (!ok.length) throw fail(400, 'These images are not in a format Claude can read (JPEG, PNG, GIF or WebP).');
+  if (ok.reduce((n, i) => n + i.data.length, 0) > 3.2e6) throw fail(413, 'These images are too large together. Send fewer or smaller ones.');
+  res.json(await ai.readImagesToText({ images: ok.map(i => ({ format: i.format, data: Buffer.from(i.data, 'base64') })), label }));
+}));
 // Knowledge base from documents: one batch of extracted text per call (the browser sends the batches).
 r.post('/ai/kb-docs', h(async (req, res) => {
   const { docs, client, product, agentType } = req.body || {};
