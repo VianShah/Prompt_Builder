@@ -1,6 +1,5 @@
 const express = require('express');
 const db = require('../db');
-const kollect = require('../lib/kollect');
 const ai = require('../lib/aiTasks');
 const sarvam = require('../lib/sarvam');
 const sarvamRest = require('../lib/sarvamRest');
@@ -31,81 +30,35 @@ function cfgFromAgent(a) {
 r.get('/agents', h(async (req, res) => {
   const agents = await db.list('agents');
   const prompts = await db.list('prompts');
-  res.json({ agents: agents.map(a => ({ ...a, promptId: (prompts.find(p => p.agentId === a.id) || {}).id || null })), kollect: { enabled: kollect.enabled() } });
+  res.json({ agents: agents.map(a => ({ ...a, promptId: (prompts.find(p => p.agentId === a.id) || {}).id || null })) });
 }));
 
-// Refresh the agent list. Sarvam is the source of truth: every agent in the Sarvam workspace is
-// listed. Kollect, when it answers, adds its extras (client, stage, talk time, calls, pins); when it
-// doesn't, the refresh still works and says so. Prompts are then re-read from Sarvam.
+// Refresh the agent list: every agent in the Sarvam workspace is listed, then each prompt is re-read from Sarvam.
 const friendly = e => e && (e.publicMessage || e.message) || 'unknown error';
 r.post('/agents/sync', h(async (req, res) => {
   const existing = await db.list('agents');
   const st = await sarvam.status();
   const sarvamOk = !!(st.hasToken && st.configured && !st.expired);
-  const out = { synced: 0, added: 0, kollect: { ok: false, error: null, count: 0 }, sarvam: { ok: false, error: null, count: 0 } };
-  let kList = [];
-  if (!kollect.enabled()) out.kollect.error = 'KOLLECT_BASE_URL is not set.';
-  else { try { kList = await kollect.listSarvamAgents(); out.kollect = { ok: true, error: null, count: kList.length }; } catch (e) { out.kollect.error = friendly(e); } }
+  const out = { synced: 0, added: 0, sarvam: { ok: false, error: null, count: 0 } };
   let sList = [];
   if (!sarvamOk) out.sarvam.error = !st.configured ? 'SARVAM_ORG_ID / SARVAM_WORKSPACE_ID not set' : !st.hasToken ? 'Sarvam is not connected. Click Connect Sarvam.' : 'The Sarvam sign-in expired. Click Reconnect.';
   else { try { sList = await sarvam.listAgents(); out.sarvam = { ok: true, error: null, count: sList.length }; } catch (e) { out.sarvam.error = friendly(e); } }
-  if (!out.kollect.ok && !out.sarvam.ok) throw fail(502, `Couldn't refresh the agent list. Sarvam: ${out.sarvam.error} Kollect: ${out.kollect.error}`);
+  if (!out.sarvam.ok) throw fail(502, `Couldn't refresh the agent list. ${out.sarvam.error}`);
 
-  const kIds = new Set(kList.map(x => x.id));
-  const sById = new Map(sList.map(x => [x.id, x]));
-  // 1. Kollect's agents (they carry the extra details).
-  for (const k of kList) {
-    const old = existing.find(x => x.id === k.id) || {};
-    const sv = sById.get(k.id);
-    await db.put('agents', { ...old, ...k, source: 'kollect', inKollect: true, sarvamName: sv ? sv.name : old.sarvamName, syncedAt: now() });
-  }
-  // 2. Everything else in Sarvam. If Kollect didn't answer, agents Kollect already knew keep their state.
   for (const sv of sList) {
-    if (kIds.has(sv.id)) continue;
     const old = existing.find(x => x.id === sv.id);
-    const inK = out.kollect.ok ? false : (old ? old.inKollect !== false : undefined);
     if (!old) out.added++;
     let newestV = old ? old.sarvamNewest : undefined; // newest committed version, so the list can show it before the prompt is loaded
     try { const c = await sarvam.committedVersions(sv.id); newestV = c[c.length - 1] || null; } catch (_) { /* keep what we had */ }
-    await db.put('agents', { bucket: 'b1', persona: 'compliant', languages: [], variables: [], product: '', stage: '', talkSeconds: 0, callsPlaced: 0, callsAnswered: 0, ...(old || {}),
-      id: sv.id, sarvamAppId: sv.id, name: (old && old.name) || sv.name, sarvamName: sv.name, client: (old && old.client) || '', source: (old && old.source) || 'sarvam',
-      ...(inK === undefined ? {} : { inKollect: inK }), ...(newestV === undefined ? {} : { sarvamNewest: newestV }), syncedAt: now() });
+    await db.put('agents', { bucket: 'b1', persona: 'compliant', languages: [], variables: [], product: '', stage: '', ...(old || {}),
+      id: sv.id, sarvamAppId: sv.id, name: (old && old.name) || sv.name, sarvamName: sv.name, client: (old && old.client) || '', source: 'sarvam',
+      ...(newestV === undefined ? {} : { sarvamNewest: newestV }), syncedAt: now() });
   }
-  out.synced = out.kollect.ok || out.sarvam.ok ? (await db.list('agents')).length : 0;
-  await audit(req.user, 'agents.sync', { kollect: out.kollect.count, sarvam: out.sarvam.count, added: out.added, kollectError: out.kollect.error, sarvamError: out.sarvam.error });
-  // Then bring in each agent's live prompt from Sarvam. New agents that only exist in Sarvam are loaded
-  // when you open them (reading a prompt in is slow), the rest are brought up to date now.
-  out.prompts = sarvamOk && can(req.user, 'edit') ? await pullAll(req.user) : { skipped: true, reason: !st.configured ? 'SARVAM_ORG_ID / SARVAM_WORKSPACE_ID not set' : !st.hasToken ? 'no Sarvam login token' : st.expired ? 'the Sarvam sign-in expired' : 'your role cannot import' };
+  out.synced = (await db.list('agents')).length;
+  await audit(req.user, 'agents.sync', { sarvam: out.sarvam.count, added: out.added });
+  // Then bring in each agent's live prompt from Sarvam.
+  out.prompts = can(req.user, 'edit') ? await pullAll(req.user) : { skipped: true, reason: 'your role cannot import prompts' };
   res.json(out);
-}));
-
-// What Kollect will call for this agent right now (latest Sarvam version, or a pin).
-r.get('/agents/:id/sarvam', h(async (req, res) => {
-  const a = await db.get('agents', req.params.id);
-  if (!a) throw fail(404, 'Unknown agent.');
-  if (a.inKollect === false) return res.json({ mode: 'none', note: 'Kollect does not have this agent, so it calls nothing here.' });
-  const v = await kollect.versions(a.sarvamAppId, req.query.refresh === '1');
-  await db.put('agents', { ...a, sarvam: v, sarvamCheckedAt: now() });
-  res.json(v);
-}));
-
-// Conversations Kollect recorded for this agent, plus its running talk time.
-r.get('/agents/:id/calls', h(async (req, res) => {
-  const a = await db.get('agents', req.params.id);
-  if (!a) throw fail(404, 'Unknown agent.');
-  const r2 = await kollect.calls(a.sarvamAppId, Number(req.query.limit) || 50);
-  const fresh = (await kollect.listSarvamAgents()).find(x => x.id === a.id);
-  if (fresh) await db.put('agents', { ...a, talkSeconds: fresh.talkSeconds, callsPlaced: fresh.callsPlaced, callsAnswered: fresh.callsAnswered });
-  res.json({ usage: fresh ? { talkSeconds: fresh.talkSeconds, callsPlaced: fresh.callsPlaced, callsAnswered: fresh.callsAnswered } : null, calls: r2.calls || [] });
-}));
-
-r.post('/agents/:id/unpin', h(async (req, res) => {
-  if (!can(req.user, 'rollback')) throw fail(403, 'Only approvers and admins can change the Sarvam version Kollect calls.');
-  const a = await db.get('agents', req.params.id);
-  if (!a) throw fail(404, 'Unknown agent.');
-  const v = await kollect.pin(a.sarvamAppId, null);
-  await audit(req.user, 'kollect.unpin', { agent: a.id });
-  res.json(v);
 }));
 
 // Store a Sarvam prompt as this agent's live version. Text is regrouped into sections, never reworded.
@@ -126,41 +79,16 @@ async function importText(a, text, sarvamVersion, user, src, extra = {}) {
   return { promptId: prompt.id, versionId: ver.id, v, import: ver.importStats };
 }
 
-// Tell Kollect which Sarvam versions are committed, so its "latest" is never the uncommitted draft.
-// Best effort: a failure here never stops a pull.
-async function reportCommitted(a, known) {
-  if (!kollect.enabled()) return null;
-  try {
-    const list = known || await sarvam.committedVersions(a.sarvamAppId);
-    if (!list.length) return null;
-    const v = await kollect.reportCommitted(a.sarvamAppId, list);
-    await db.put('agents', { ...(await db.get('agents', a.id)), sarvam: v, sarvamCheckedAt: now() });
-    return v;
-  } catch (e) { console.warn('[kollect] could not report committed versions for', a.sarvamAppId, e.message); return null; }
-}
-
 // Pull the agent's instructions from Sarvam. Imports a new live version only when the text changed,
 // so repeated syncs don't pile up identical versions.
 async function pullFromSarvam(a, user) {
-  // Sarvam is the source of truth for which versions exist. Kollect, when it answers and has this agent,
-  // says which one it calls (a pin); otherwise the newest committed version in Sarvam is used. A pin
-  // saved earlier is never trusted when Kollect can't be reached now.
+  // Sarvam is the source of truth: the prompt read is the newest committed version.
   const committed = await sarvam.committedVersions(a.sarvamAppId);
   const newest = committed[committed.length - 1] || null;
-  const kv = a.inKollect === false ? null : await reportCommitted(a, committed);
-  const kollectDown = a.inKollect !== false && kollect.enabled() && !kv;
-  await db.put('agents', { ...(await db.get('agents', a.id)), sarvamNewest: newest, kollectDown, sarvamCheckedAt: now() });
-  const pinned = kv && kv.mode === 'pinned' ? kv.active : null;
+  await db.put('agents', { ...(await db.get('agents', a.id)), sarvamNewest: newest, sarvamCheckedAt: now() });
   const prompt0 = (await db.list('prompts')).find(p => p.agentId === a.id);
   const live0 = prompt0 && (await db.list('versions', v => v.promptId === prompt0.id && v.status === 'live'))[0];
-  // Never swap the live version for an OLDER Sarvam version on a refresh: that silently drops every
-  // fix pushed since. A real rollback goes through "Roll back to this", which marks it live itself.
-  if (pinned && live0 && live0.sarvamVersion && pinned < live0.sarvamVersion) {
-    const msg = `Kollect is pinned to Sarvam v${pinned}, older than the live v${live0.sarvamVersion}. Not re-imported. Pin v${live0.sarvamVersion} in Kollect, or roll back from History if v${pinned} is wanted.`;
-    await db.put('agents', { ...(await db.get('agents', a.id)), sarvamPulledAt: now(), sarvamPullError: msg });
-    return { changed: false, warning: msg };
-  }
-  const lp = await sarvam.livePrompt(a.sarvamAppId, pinned);
+  const lp = await sarvam.livePrompt(a.sarvamAppId);
   const fresh = await db.get('agents', a.id);
   const agentInfo = { sarvamPulledAt: now(), sarvamPullError: null, sarvamDraftAhead: lp.draftAhead || null };
   // Sections that no longer line up with the text (e.g. from an older import) are rebuilt by re-importing.
@@ -238,7 +166,7 @@ r.get('/sarvam/resources', h(async (req, res) => {
   res.json({ items: (await sarvam.listResources()).map(x => ({ uri: x.uri, name: x.name, description: (x.description || '').slice(0, 200) })) });
 }));
 
-// Every agent in the Sarvam workspace, whether or not Kollect knows it (read-only).
+// Every agent in the Sarvam workspace(read-only).
 r.get('/sarvam/agents', h(async (req, res) => {
   const list = await sarvam.listAgents();
   res.json({ count: list.length, items: list.map(a => ({ id: a.id, name: a.name, status: a.status, latestVersion: a.latestVersion, updatedAt: a.updatedAt, keys: req.query.raw ? Object.keys(a.raw) : undefined, raw: req.query.raw && a === list[0] ? a.raw : undefined })) });
@@ -330,13 +258,12 @@ r.post('/agents/:id/import', h(async (req, res) => {
   const text = String((req.body || {}).text || '');
   if (text.trim().length < 200) throw fail(400, 'Paste the full prompt from Sarvam (at least a few paragraphs).');
   let sarvamVersion = Number((req.body || {}).sarvamVersion) || null;
-  if (!sarvamVersion && kollect.enabled()) { try { sarvamVersion = (await kollect.versions(a.sarvamAppId)).active; } catch (_) { /* keep null */ } }
   sarvamVersion = sarvamVersion || a.catalogVersion || null;
   res.json(await importText(a, text, sarvamVersion, req.user, 'Sarvam import', { sarvamText: text.split(String.fromCharCode(13)).join('').trim() }));
 }));
 
 // ======================= Call review =======================
-// Every call Sarvam handled for the agent, by date. Kollect reads them from Sarvam's analytics API.
+// Every call Sarvam handled for the agent, by date. Read from Sarvam's analytics API.
 async function loadAgent(id) { const a = await db.get('agents', id); if (!a) throw fail(404, 'Unknown agent.'); return a; }
 const IID_RE = /^\d{8}\/[A-Za-z0-9:._-]{6,120}$/;
 const iidOf = req => { const id = String(req.query.iid || (req.body || {}).iid || ''); if (!IID_RE.test(id)) throw fail(400, 'Bad call id.'); return id; };
@@ -350,8 +277,8 @@ r.get('/agents/:id/interactions', h(async (req, res) => {
   res.json({ ...out, from, to });
 }));
 
-// Where calls come from, in order: the Sarvam API key (no daily sign-in, no Kollect), then the Sarvam
-// MCP sign-in, then Kollect. The first that answers wins; if none does, the first error is shown.
+// Where calls come from, in order: the Sarvam API key (no daily sign-in), then the Sarvam
+// MCP sign-in. The first that answers wins; if none does, the first error is shown.
 async function mcpCalls(appId, from, to, offset) {
   const r = await sarvam.callTool('analytics', { operation: 'report', id: 'interactions', params: { app_id: appId, start_datetime: new Date(from).toISOString(), end_datetime: new Date(to).toISOString(), offset, sort_by: 'start_datetime', sort_order: 'desc' } });
   // The MCP report writes times as IST text ("Oct 08, 2026, 03:38:31 PM"): turn them into real timestamps.
@@ -365,12 +292,11 @@ async function listCalls(a, from, to, offset) {
   if (sarvamRest.enabled()) { try { return await sarvamRest.list(a.sarvamAppId, { from, to, offset }); } catch (e) { errs.push(e.publicMessage || e.message); } }
   const st = await sarvam.status();
   if (st.hasToken && !st.expired) { try { return await mcpCalls(a.sarvamAppId, from, to, offset); } catch (e) { errs.push(e.publicMessage || e.message); } }
-  if (kollect.enabled() && a.inKollect !== false) { try { return await kollect.interactions(a.sarvamAppId, from, to, offset); } catch (e) { errs.push(e.publicMessage || e.message); } }
-  throw fail(502, errs[0] || 'There is no source for calls here. Set SARVAM_API_KEY in the environment (best: it never expires), or connect Sarvam, or set up Kollect.');
+  throw fail(502, errs[0] || 'There is no source for calls here. Set SARVAM_API_KEY in the environment (best: it never expires), or connect Sarvam.');
 }
 
 // Transcript with each turn's place in the recording. Sarvam's MCP analytics has the timings; the
-// REST transcript through Kollect (no timings) is the fallback when Sarvam isn't connected here.
+// REST transcript (no timings) is the fallback when Sarvam isn't connected here.
 const transcriptCache = new Map();
 async function transcriptFor(a, iid) {
   const key = a.sarvamAppId + '|' + iid;
@@ -382,12 +308,9 @@ async function transcriptFor(a, iid) {
     if (Array.isArray(t.transcript) && t.transcript.length) {
       out = { timed: true, turns: t.transcript.map(m => ({ role: m.role === 'assistant' ? 'agent' : m.role, text: m.content || '', language: m.language_name || '', start: m.audio_start_time ?? null, end: m.audio_end_time ?? null, state: m.state_name || '', tools: m.tools || null })) };
     }
-  } catch (_) { /* fall back to the API key, then Kollect */ }
-  if (!out && sarvamRest.enabled()) { try { out = await sarvamRest.transcript(a.sarvamAppId, iid); } catch (_) { /* fall back to Kollect */ } } // no timings, so lines don't follow the audio
-  if (!out) {
-    if (!kollect.enabled() || a.inKollect === false) throw fail(502, 'Couldn\'t read this transcript. Set SARVAM_API_KEY in the environment, or connect Sarvam.');
-    const t = await kollect.transcript(a.sarvamAppId, iid); out = { timed: false, turns: t.turns.map(m => ({ role: m.role, text: m.text, language: m.language, start: null, end: null })) };
-  }
+  } catch (_) { /* fall back to the API key */ }
+  if (!out && sarvamRest.enabled()) { try { out = await sarvamRest.transcript(a.sarvamAppId, iid); } catch (_) { /* no timings */ } }
+  if (!out) throw fail(502, "Couldn't read this transcript. Set SARVAM_API_KEY in the environment, or connect Sarvam.");
   transcriptCache.set(key, out);
   if (transcriptCache.size > 100) transcriptCache.delete(transcriptCache.keys().next().value);
   return out;
@@ -397,7 +320,7 @@ r.get('/agents/:id/interactions/transcript', h(async (req, res) => {
   res.json(await transcriptFor(a, iidOf(req)));
 }));
 
-// The recording, downloaded once through Kollect and kept on disk, then served with range support
+// The recording, downloaded once and kept on disk, then served with range support
 // so the player can jump to any turn.
 const fs = require('fs');
 const path = require('path');
@@ -410,9 +333,8 @@ r.get('/agents/:id/interactions/audio', h(async (req, res) => {
   const file = path.join(REC_DIR, crypto.createHash('sha1').update(a.sarvamAppId + '|' + iid).digest('hex') + '.wav');
   if (!fs.existsSync(file)) {
     if (!recPending.has(file)) recPending.set(file, (async () => {
-      let rec = null;
-      if (sarvamRest.enabled()) { try { rec = await sarvamRest.recording(a.sarvamAppId, iid); } catch (e) { if (!kollect.enabled()) throw e; } }
-      if (!rec) { if (!kollect.enabled()) throw fail(502, 'No way to fetch the recording: set SARVAM_API_KEY in the environment.'); rec = await kollect.recording(a.sarvamAppId, iid); }
+      if (!sarvamRest.enabled()) throw fail(502, 'No way to fetch the recording: set SARVAM_API_KEY in the environment.');
+      const rec = await sarvamRest.recording(a.sarvamAppId, iid);
       fs.mkdirSync(REC_DIR, { recursive: true });
       fs.writeFileSync(file + '.part', rec.data); fs.renameSync(file + '.part', file);
       const all = fs.readdirSync(REC_DIR).filter(f => f.endsWith('.wav')).map(f => ({ f, t: fs.statSync(path.join(REC_DIR, f)).mtimeMs })).sort((x, y) => y.t - x.t);
@@ -517,7 +439,7 @@ async function voices() {
   voicesCache = { at: Date.now(), list };
   return list;
 }
-// What the agent has now (in the Sarvam version Kollect calls), plus the choices.
+// What the agent has now (in the newest committed Sarvam version), plus the choices.
 r.get('/agents/:id/config', h(async (req, res) => {
   const a = await loadAgent(req.params.id);
   const prompt = (await db.list('prompts')).find(p => p.agentId === a.id);
@@ -553,7 +475,7 @@ r.post('/agents/clone', h(async (req, res) => {
   const appId = out.id || (out.details && (out.details.app_id || out.details.id));
   if (!appId) throw fail(502, 'Sarvam created the agent but didn\'t say its id. Check Sarvam, then Refresh.');
   if (!(await sarvam.committedVersions(appId)).length) await sarvam.commit(appId, `Created in the Prompt Builder from ${src.name}${args.clone_version ? ` v${args.clone_version}` : ''} by ${req.user.email}`);
-  const { id, kollectId, syncedAt, sarvam: _s, sarvamPromptHash, sarvamPulledAt, sarvamPullError, sarvamDraftAhead, talkSeconds, callsPlaced, callsAnswered, uatAgentId, ...keep } = src;
+  const { id, syncedAt, sarvam: _s, sarvamPromptHash, sarvamPulledAt, sarvamPullError, sarvamDraftAhead, talkSeconds, callsPlaced, callsAnswered, uatAgentId, ...keep } = src;
   const agent = await db.put('agents', { ...keep, id: appId, sarvamAppId: appId, name: nm, client: String(client || src.client || '').trim(), source: 'builder', clonedFrom: { id: src.id, name: src.name, version: args.clone_version || null }, catalogVersion: 1, talkSeconds: 0, callsPlaced: 0, callsAnswered: 0, createdAt: now() });
   await audit(req.user, 'agent.clone', { from: src.id, to: appId, name: nm });
   let pulled = null;
@@ -583,5 +505,4 @@ r.patch('/agents/:id', h(async (req, res) => {
 }));
 
 module.exports = r;
-module.exports.reportCommitted = reportCommitted;
 module.exports.pullFromSarvam = pullFromSarvam;

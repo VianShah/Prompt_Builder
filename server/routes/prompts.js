@@ -1,6 +1,5 @@
 const express = require('express');
 const db = require('../db');
-const kollect = require('../lib/kollect');
 const pushLib = require('../lib/sarvamPush');
 const core = require('../../shared/promptcore');
 const { can } = require('../auth');
@@ -261,7 +260,7 @@ r.post('/prompts/:id/settings', h(async (req, res) => {
   res.json({ versionId: ver.id, v: ver.v, summary, updated });
 }));
 
-// ---- Approval workflow: draft → pending → approved → live (confirmed in Sarvam via Kollect) ----
+// ---- Approval workflow: draft → pending → approved → live (confirmed in Sarvam) ----
 async function loadVersion(vid) {
   const v = await db.get('versions', vid);
   if (!v) throw fail(404, 'Version not found.');
@@ -307,31 +306,28 @@ async function markLive(p, v, user, sarvamVersion, action) {
   await db.put('prompts', { ...p, liveVersionId: v.id });
 }
 
-// After the approved text has been pasted into Sarvam and committed: confirm the new Sarvam version and (optionally) pin it in Kollect.
+// After the approved text has been pasted into Sarvam and committed: confirm the new Sarvam version.
 r.post('/versions/:vid/go-live', h(async (req, res) => {
   if (!can(req.user, 'golive')) throw fail(403, 'Only approvers can take a version live.');
   const v = await loadVersion(req.params.vid);
   if (v.status !== 'approved') throw fail(409, 'Approve this version before taking it live.');
   const p = await loadPrompt(v.promptId);
   const agent = p.agentId ? await db.get('agents', p.agentId) : null;
-  const { sarvamVersion: given, pin, force } = req.body || {};
-  let sv = Number(given) || null, kv = null;
+  const { sarvamVersion: given, force } = req.body || {};
+  let sv = Number(given) || null;
   if (agent && agent.sarvamAppId) {
-    // Ask Sarvam itself which versions are committed (Kollect may not have this agent, or may be down).
+    // Ask Sarvam itself which versions are committed 
     let newest = null;
-    try { const c = await require('../lib/sarvam').committedVersions(agent.sarvamAppId); newest = c[c.length - 1] || null; } catch (_) { /* fall back to Kollect */ }
-    const viaKollect = kollect.enabled() && agent.inKollect !== false;
-    if (viaKollect) { try { kv = await kollect.versions(agent.sarvamAppId, true); if (!newest) newest = kv.latest; } catch (_) { kv = null; } }
+    try { const c = await require('../lib/sarvam').committedVersions(agent.sarvamAppId); newest = c[c.length - 1] || null; } catch (_) { /* ask for the number */ }
     if (!newest && !sv) throw fail(400, 'Enter the Sarvam version number you committed.');
     sv = sv || newest;
     if (newest && sv > newest) throw fail(409, `Sarvam's newest version for this agent is v${newest}. v${sv} doesn't exist yet.`);
     const live = (await db.list('versions', x => x.promptId === p.id && x.status === 'live'))[0];
     if (live && live.sarvamVersion === sv && !force) throw fail(409, `Sarvam still shows v${sv}, the version already live. Paste the approved prompt into Sarvam and commit it first.`, 'same_version');
-    if (pin && viaKollect && kv) await kollect.pin(agent.sarvamAppId, sv);
   } else if (!sv) throw fail(400, 'Enter the Sarvam version number you committed.');
   await markLive(p, v, req.user, sv, 'went_live');
-  await audit(req.user, 'version.go_live', { version: v.id, sarvamVersion: sv, pinned: !!pin });
-  res.json({ ok: true, sarvamVersion: sv, pinned: !!(pin && agent && kv), kollect: kv });
+  await audit(req.user, 'version.go_live', { version: v.id, sarvamVersion: sv, });
+  res.json({ ok: true, sarvamVersion: sv });
 }));
 
 // Apply a version's own edits onto newer text. An edit whose result is already there (the same fix
@@ -455,10 +451,10 @@ r.post('/prompts/:id/restore-fix', h(async (req, res) => {
 }));
 
 // One step instead of copy → paste → commit → confirm: write the approved version's changed
-// passages into the agent's Sarvam draft, commit it as a new Sarvam version, optionally pin it in
-// Kollect, and mark it live here. { dryRun: true } checks everything with Sarvam and writes nothing.
+// passages into the agent's Sarvam draft, commit it as a new Sarvam version,
+// and mark it live here. { dryRun: true } checks everything with Sarvam and writes nothing.
 r.post('/versions/:vid/push', h(async (req, res) => {
-  const { dryRun, allowDraftChanges, pin, target } = req.body || {};
+  const { dryRun, allowDraftChanges, target } = req.body || {};
   const v = await loadVersion(req.params.vid);
   const p = await loadPrompt(v.promptId);
   const agent = p.agentId ? await db.get('agents', p.agentId) : null;
@@ -482,7 +478,6 @@ r.post('/versions/:vid/push', h(async (req, res) => {
     v.uat = { agentId: uat.id, name: uat.name, sarvamVersion: out.version, at: now(), by: req.user.email };
     step(v, req.user, 'pushed_to_uat', `${uat.name} · Sarvam v${out.version}`);
     await db.put('versions', v);
-    require('./agents').reportCommitted(uat).catch(() => { });
     require('./agents').pullFromSarvam(await db.get('agents', uat.id), req.user).catch(() => { }); // keep the UAT agent's own page current
     await audit(req.user, 'version.push_uat', { version: v.id, uat: uat.id, sarvamVersion: out.version });
     return res.json({ ok: true, target: 'uat', uatName: uat.name, sarvamVersion: out.version, edits: out.edits });
@@ -493,14 +488,8 @@ r.post('/versions/:vid/push', h(async (req, res) => {
 
   const builtOn = builtOnOf(v, sortV(await db.list('versions', x => x.promptId === p.id)));
   const out = await pushLib.push({ agent, live, next: v, cfg: p.cfg, user: req.user, dryRun: !!dryRun, allowDraftChanges: !!allowDraftChanges, builtOn });
-  if (dryRun) return res.json({ ...out, builtOn, kollectPinned: agent.sarvam && agent.sarvam.mode === 'pinned' ? agent.sarvam.active : null });
+  if (dryRun) return res.json({ ...out, builtOn });
 
-  let pinned = false, pinError = null;
-  await require('./agents').reportCommitted(agent); // Kollect now knows the new version is committed
-  if (pin && kollect.enabled() && agent.inKollect !== false) { try { await kollect.pin(agent.sarvamAppId, out.version); pinned = true; } catch (e) { pinError = e.message; } }
-  // Store what Kollect calls NOW (after the new pin). The stored copy used to be from before the pin,
-  // so the next refresh followed the old pin and re-imported the previous version as live.
-  if (kollect.enabled() && agent.inKollect !== false) { try { const kv = await kollect.versions(agent.sarvamAppId, true); await db.put('agents', { ...(await db.get('agents', agent.id)), sarvam: kv, sarvamCheckedAt: now() }); } catch (_) { /* best effort */ } }
   if (v.sarvamText !== out.text) v.sourceChunks = null; // passages are re-derived from the committed text when needed
   v.sarvamText = out.text;
   if (live && live.sarvamMeta) v.sarvamMeta = { ...live.sarvamMeta, ...(out.greeting ? { greeting: out.greeting } : {}) };
@@ -508,23 +497,14 @@ r.post('/versions/:vid/push', h(async (req, res) => {
   await markLive(p, v, req.user, out.version, 'went_live');
   // Next sync sees this exact text and doesn't import it again as a separate version.
   await db.put('agents', { ...(await db.get('agents', agent.id)), sarvamPromptHash: out.newHash, sarvamPulledAt: now(), sarvamPullError: null });
-  await audit(req.user, 'version.push', { version: v.id, sarvamVersion: out.version, edits: out.edits, pinned, draftIncluded: out.draftDirty });
-  res.json({ ok: true, sarvamVersion: out.version, edits: out.edits, pinned, pinError });
+  await audit(req.user, 'version.push', { version: v.id, sarvamVersion: out.version, edits: out.edits, draftIncluded: out.draftDirty });
+  res.json({ ok: true, sarvamVersion: out.version, edits: out.edits });
 }));
 
-// Roll back: make an earlier live version live again by pinning its Sarvam version in Kollect.
+// Roll back: Sarvam keeps no "which version is live" switch for the builder to flip, so going back means
+// pushing the earlier version's text as a new Sarvam version. This only explains that; the UI offers it as "Push this again".
 r.post('/versions/:vid/rollback', h(async (req, res) => {
-  if (!can(req.user, 'rollback')) throw fail(403, 'Only approvers and admins can roll back.');
-  const v = await loadVersion(req.params.vid);
-  if (!v.sarvamVersion || !['superseded', 'rolled_back'].includes(v.status)) throw fail(409, 'Only a version that was live before can be rolled back to.');
-  const p = await loadPrompt(v.promptId);
-  const agent = p.agentId ? await db.get('agents', p.agentId) : null;
-  let pinned = false;
-  if (agent && agent.inKollect === false) throw fail(409, 'Kollect does not have this agent, so there is nothing to pin. To go back to an older version, push its text as a new version.');
-  if (agent && kollect.enabled()) { await kollect.pin(agent.sarvamAppId, v.sarvamVersion); pinned = true; }
-  await markLive(p, v, req.user, v.sarvamVersion, 'rollback');
-  await audit(req.user, 'version.rollback', { version: v.id, sarvamVersion: v.sarvamVersion, pinned });
-  res.json({ ok: true, pinned, sarvamVersion: v.sarvamVersion });
+  throw fail(409, 'To go back to an older version, push its text again as a new version (Sarvam has no switch to re-activate an old one).');
 }));
 
 r.get('/approvals', h(async (req, res) => {

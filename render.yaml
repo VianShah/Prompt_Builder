@@ -11,7 +11,7 @@ services:
   - type: web
     name: prompt-builder
     runtime: node
-    region: singapore          # same region as the database; change both together if Kollect runs elsewhere
+    region: singapore          # same region as the database
     plan: starter              # free web services sleep after 15 minutes idle
     buildCommand: npm ci
     startCommand: npm start
@@ -27,15 +27,19 @@ services:
         generateValue: true
       - key: BUILDER_USERS
         sync: false
-      - key: KOLLECT_BASE_URL
-        sync: false
-      - key: KOLLECT_API_KEY
-        sync: false
       - key: GEMINI_API_KEY
         sync: false
       - key: GLM_BEDROCK_API_KEY
         sync: false
       - key: LLM_ORDER
-        value: glm,gemini
+        value: claude,glm,gemini
       - key: SARVAM_PROMPT_PUSH
         value: manual
+      - key: AWS_BEARER_TOKEN_BEDROCK
+        sync: false
+      - key: SARVAM_ORG_ID
+        sync: false
+      - key: SARVAM_WORKSPACE_ID
+        sync: false
+      - key: SARVAM_API_KEY
+        sync: false

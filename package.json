@@ -8,8 +8,6 @@
   "scripts": {
     "start": "node server/index.js",
     "dev": "node --watch server/index.js",
-    "mock-kollect": "node scripts/mockKollect.js",
-    "smoke": "node scripts/smoke.js",
     "export-sarvam": "node scripts/export-sarvam-token.js",
     "import-local": "node scripts/import-local-data.js"
   },

@@ -1,6 +1,6 @@
 // Calls straight from Sarvam's analytics REST API, with the Voice Agents API key (SARVAM_API_KEY).
 // Unlike the MCP sign-in (about 24 hours, no renewal) the key doesn't expire daily, so the Calls tab
-// keeps working with no sign-in and without Kollect. The key can read calls, transcripts and recordings;
+// keeps working with no sign-in. The key can read calls, transcripts and recordings;
 // it can't read an agent's prompt (that needs the MCP sign-in).
 //   GET /api/analytics/v1/{org}/{ws}/{app}/interactions?start_datetime&end_datetime&offset&limit&sort_by&sort_order
 //   GET …/{app}/transcripts/{interaction_id}   -> { messages: [{ turn_id, role, content, language_name }] }
