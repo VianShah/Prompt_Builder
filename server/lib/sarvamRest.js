@@ -7,7 +7,7 @@
 //   GET …/{app}/recordings/{interaction_id}    -> audio/wav
 const config = require('../config');
 
-const BASE = 'https://apps.sarvam.ai/api/analytics/v1';
+const BASE = process.env.SARVAM_API_BASE || 'https://apps.sarvam.ai/api/analytics/v1'; // override for tests
 const enabled = () => !!(config.sarvam.apiKey && config.sarvam.orgId && config.sarvam.workspaceId);
 const base = appId => `${BASE}/${config.sarvam.orgId}/${config.sarvam.workspaceId}/${encodeURIComponent(appId)}`;
 const err = (status, msg) => Object.assign(new Error(msg), { status, publicMessage: msg, code: 'sarvam_rest' });
