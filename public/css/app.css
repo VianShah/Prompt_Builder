@@ -508,3 +508,45 @@ details.fb-more > .stack{margin-top:12px}
 .login .brand{padding:0 0 4px}
 @media (prefers-reduced-motion:no-preference){.nav a,.arow,.toc a,.subtabs button{transition:background .12s,color .12s}}
 .nowrap{white-space:nowrap}
+
+/* ---- Minimal: one focus per screen, no boxes where space will do, no uppercase labels ---- */
+.eyebrow,.lbl{font-size:13px;font-weight:500;letter-spacing:0;text-transform:none;color:var(--ink2);margin-bottom:8px}
+h1{font-size:22px}
+h2{font-size:17px}
+.view-head{margin-bottom:28px}
+.view-head p{font-size:13.5px}
+.nav-h{font-size:0;padding:10px 10px 6px;margin:0 10px 0 10px;border-top:1px solid var(--line)}
+.nav a{font-size:14px;padding:7px 10px}
+.side{gap:22px}
+.chip{background:transparent;border:1px solid var(--line);color:var(--muted)}
+.chip.acc{border-color:transparent;background:var(--accent-soft);color:var(--accent)}
+.chip.ok,.chip.warn,.chip.err{border-color:transparent}
+.btn[aria-pressed="true"]:not(.pill){background:var(--accent-soft);border-color:transparent;color:var(--accent)}
+.toggle-row{padding:14px 0}
+.toggle-row .t b{font-weight:500}
+
+/* New prompt: quiet step list | one form column; the outline slides in on demand */
+.create{grid-template-columns:200px minmax(0,720px);gap:56px;justify-content:start}
+.create > .form{min-width:0;display:flex;flex-direction:column;gap:0}
+.create > .form > .stack{gap:22px}
+.rail{gap:0;top:32px}
+.rail button{gap:12px;padding:7px 0;border-radius:0;background:transparent!important;color:var(--muted);font-size:14px}
+.rail button:hover{color:var(--ink)}
+.rail button[aria-current="step"]{color:var(--ink);font-weight:600;background:transparent;box-shadow:none}
+.rail .mk{width:14px;flex:none;display:inline-grid;place-items:center;font-size:11px;color:var(--ok)}
+.rail .mk:empty::before{content:"";width:5px;height:5px;border-radius:50%;background:var(--line2)}
+.rail [aria-current="step"] .mk:empty::before{background:var(--accent);width:7px;height:7px}
+.rail .mk.bad::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--err)}
+.step-foot{margin-top:36px;padding-top:20px;border-top:1px solid var(--line)}
+.drawer{position:fixed;top:0;right:0;bottom:0;width:min(380px,100%);z-index:20;background:var(--surface);border-left:1px solid var(--line);box-shadow:var(--shadow-lg);padding:24px;overflow:auto}
+.drawer h3{font-size:13px;font-weight:600;margin:4px 0 6px}
+.drawer .impact{border-left-width:2px}
+@media (max-width:1000px){.create{grid-template-columns:minmax(0,1fr);gap:20px}.rail{position:static;flex-direction:row;overflow-x:auto;gap:16px}.rail button{white-space:nowrap}}
+@media (prefers-reduced-motion:no-preference){.drawer{animation:drawer-in .18s ease-out}@keyframes drawer-in{from{transform:translateX(24px);opacity:0}}}
+/* label text and its hint on one line, the control below */
+label.f{display:block}
+label.f > input,label.f > select,label.f > textarea{display:block;margin-top:7px}
+label.f > span.hint{font-size:12.5px}
+/* selected option in a toggle: clearly marked in light and dark */
+.seg{background:transparent;border-color:var(--line2)}
+.seg button[aria-pressed="true"]{background:var(--accent-soft);color:var(--accent);box-shadow:none;font-weight:500}
