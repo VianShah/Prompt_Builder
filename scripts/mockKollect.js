@@ -49,6 +49,15 @@ app.post('/openai/v1/chat/completions', (req, res) => {
     const files = [...p.matchAll(/=== FILE: (.+?) ===/g)].map(m => m[1]);
     out = { facts: files.flatMap((f, i) => [{ k: `Late fee ${i + 1}`, v: `A late fee applies as written in ${f}.`, kind: i % 2 ? 'policy' : 'product', src: f }, { k: 'Payment channels', v: 'UPI, net banking or the app.', kind: 'contact', src: f }]),
       faqs: files.map(f => ({ q: 'Can I pay by UPI?', a: 'Yes, through the payment link.', src: f })), oos: "I don't have that information; I'll note it for the team." };
+  } else if (p.includes('and FIX what you find')) {
+    const blk = id => { const m = p.split(`[${id}] `)[1]; return m ? m.split('\n').slice(1).join('\n').split('\n\n[')[0] : ''; };
+    const greet = blk('OPEN-GREET');
+    out = [
+      { section: 'opening', severity: 'medium', issue: 'The greeting does not say the call may be recorded.', suggestion: 'Mention recording in the greeting.', fix: { type: 'edit', block: 'OPEN-GREET', new_text: greet + '\nSay once that the call may be recorded for quality.' } },
+      { section: 'objections', severity: 'high', issue: 'Nothing covers a customer who says they lost their job this month.', suggestion: 'Add a hardship rule.', fix: { type: 'add', section: 'objections', text: 'If the customer has lost their job: respond with empathy, do not push for payment today, and offer a callback.' } },
+      { section: 'rules', severity: 'high', issue: 'The compliance core does not forbid calling relatives.', suggestion: 'Strengthen it.', fix: { type: 'edit', block: 'CORE-NN-01', new_text: 'Never call relatives.' } },
+      { section: 'persona', severity: 'low', issue: 'The persona is softer than the bucket usually needs.', suggestion: 'Use Compliant + firm.', fix: { type: 'setting', step: 'Persona', change: 'Pick Compliant + firm.' } },
+    ];
   } else if (p.includes('Review this collections')) out = [];
   else out = { facts: [], faqs: [], oos: '' };
   res.json({ choices: [{ message: { content: JSON.stringify(out) } }] });

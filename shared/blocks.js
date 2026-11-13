@@ -87,7 +87,7 @@ function baseCfg(){
     compliance:{rpcAttempts:3,spouse:false,recording:true,windowStart:"08:00",windowEnd:"19:00",nameUse:"full",aiDisclosure:true},
     persona:"compliant",
     mapping:Object.fromEntries(SCHEMA.map(s=>[s.k,""])),
-    mapSrc:{}, mapOff:[], extraVars:[],
+    mapSrc:{}, mapOff:[], extraVars:[], overrides:{}, addons:{},
     kb:{facts:[],faqs:[],oos:"I don't have that information right now. I'll note your question so the team can help you."},
     order:[...CANON], off:[]
   };

@@ -160,6 +160,43 @@ ${markdown.slice(0, 120000)}`;
   return { issues: (Array.isArray(r.data) ? r.data : []).filter(x => x && x.issue), provider: r.provider };
 }
 
+// Review a prompt built in the wizard AND propose a fix for each issue, so it can be applied in place:
+//   edit    : new wording for one block (only blocks that aren't locked)
+//   add     : a new rule appended to a section (also how a locked block is strengthened)
+//   setting : the real cause is a choice on an earlier wizard step; say which step and what to change
+async function reviewWithFixes({ blocks, steps }) {
+  const list = (Array.isArray(blocks) ? blocks : []).filter(x => x && x.id && x.text != null).slice(0, 200);
+  const stepNames = (Array.isArray(steps) ? steps : []).map(String).slice(0, 12);
+  const secs = [...new Set(list.map(x => x.sec))];
+  const req = `Review this collections voice-agent prompt (Indian lending, phone calls in several languages) and FIX what you find. Look for: contradictions between blocks; persona lines that could override compliance or client policy; common collection-call situations with no handling; compliance risks (threats, disclosure to third parties, promises of outcomes, invented facts). Ignore style and wording preferences.
+
+The prompt is made of blocks. For each issue give exactly one fix:
+- "edit": rewrite ONE block that is not locked. "block" = its id, "new_text" = the whole new text of that block. Change only what the issue needs; keep every other rule, {variable} and number in the block exactly.
+- "add": add a short new rule to a section ("section" = section id, "text" = the rule, one or two sentences). Use this when nothing covers the situation, or when the block at fault is locked.
+- "setting": when the real cause is a choice made on one of these setup steps: ${stepNames.join(', ')}. "step" = the step name exactly, "change" = what to set it to, in one sentence.
+Locked blocks are shared compliance and platform rules: never edit them.
+
+Reply with only a JSON array of up to 8 objects:
+{"section": "section id", "severity": "high"|"medium"|"low", "issue": "one sentence", "suggestion": "one sentence on the fix", "fix": {"type": "edit"|"add"|"setting", "block": "", "new_text": "", "text": "", "step": "", "change": ""}}
+Return [] if there are no real issues.
+
+SECTION IDS: ${secs.join(', ')}
+
+BLOCKS (in prompt order):
+${list.map(x => `[${x.id}] section=${x.sec}${x.locked ? ' LOCKED' : ''}\n${String(x.text).slice(0, 4000)}`).join('\n\n').slice(0, 150000)}`;
+  const r = await llm.json(req, { maxTokens: 12000, timeoutMs: 240000 });
+  const byId = new Map(list.map(x => [x.id, x]));
+  const issues = (Array.isArray(r.data) ? r.data : []).filter(x => x && x.issue).slice(0, 8).map(x => {
+    const f = x.fix || {}, out = { section: String(x.section || ''), severity: ['high', 'medium', 'low'].includes(x.severity) ? x.severity : 'medium', issue: String(x.issue), suggestion: String(x.suggestion || '') };
+    const b = byId.get(String(f.block || ''));
+    if (f.type === 'edit' && b && !b.locked && String(f.new_text || '').trim() && f.new_text !== b.text) out.fix = { type: 'edit', block: b.id, sec: b.sec, before: b.text, text: String(f.new_text).trim() };
+    else if ((f.type === 'add' || (f.type === 'edit' && b && b.locked)) && String(f.text || f.new_text || '').trim()) out.fix = { type: 'add', sec: secs.includes(f.section) ? f.section : (b ? b.sec : secs.includes(x.section) ? x.section : 'rules'), text: String(f.text || f.new_text).trim() };
+    else if (f.type === 'setting' && stepNames.includes(String(f.step))) out.fix = { type: 'setting', step: String(f.step), change: String(f.change || x.suggestion || '') };
+    return out;
+  });
+  return { issues, provider: r.provider };
+}
+
 async function kbDraft({ notes, client, product }) {
   const text = `Turn these product notes into a knowledge base for a collections voice agent for ${client || 'a lender'} (${product || 'loan'}).
 Rules: only use facts stated in the notes. Write FAQs the way a borrower would ask on a phone call. Answers are one or two sentences, say what the agent says or does, and never promise an outcome (no "will be waived/approved/updated"). Never write specific rupee amounts; refer to them as the amount on the account.
@@ -680,4 +717,4 @@ At most 10 differences, most important first.`;
     differences: (Array.isArray(d.differences) ? d.differences : []).filter(x => x && x.area).slice(0, 10).map(x => ({ area: String(x.area), a: String(x.a || ''), b: String(x.b || ''), risk: ['high', 'medium', 'low'].includes(x.risk) ? x.risk : 'low' })) };
 }
 
-module.exports = { kbFromDocs, SKELETON, factoryMap, factoryAssemble, factoryReview, factoryRevise, diagnoseGroup, buildTests, runTest, optimizePrompt, applyEdits, analyzeTranscript, critiqueFix, mapFeedback, draftFix, review, kbDraft, importPrompt, diagnoseCall, compareSummary };
+module.exports = { reviewWithFixes, kbFromDocs, SKELETON, factoryMap, factoryAssemble, factoryReview, factoryRevise, diagnoseGroup, buildTests, runTest, optimizePrompt, applyEdits, analyzeTranscript, critiqueFix, mapFeedback, draftFix, review, kbDraft, importPrompt, diagnoseCall, compareSummary };

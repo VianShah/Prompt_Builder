@@ -7,8 +7,20 @@ const words = s => (String(s).match(/\S+/g) || []).length;
 const tagLine = b => `<!-- ${b.id} · ${b.layer} · ${b.src} -->`;
 const TAG_RE = /^<!-- ([A-Za-z0-9-]+) · (L\d) · (.*) -->$/;
 
+// Blocks per section, in order. Fixes accepted from the AI review are part of the config:
+// c.overrides[blockId] replaces a block's wording (never a locked block), and c.addons[section] adds rules.
+const ADDON = (sec, i) => ({ id: `ADD-${sec}-${i + 1}`, sec, layer: "L2", src: "Added in review", t: "Added rule", edit: "addon", when: () => true });
+// Platform (L0) and compliance (L1) blocks are shared and never reworded per agent; a review can only add to them.
+const fixedBlock = b => b.edit === "locked" || ["L0", "L1"].includes(b.layer);
+function blockText(c, b) {
+  const o = c.overrides && c.overrides[b.id];
+  return o != null && !fixedBlock(b) ? o : b.text(c);
+}
 function assemble(c) {
-  return c.order.map(sec => ({ sec, blocks: PB.BLOCKS.filter(b => b.sec === sec && b.when(c)).map(b => ({ b, on: !c.off.includes(b.id), text: b.text(c) })) }));
+  return c.order.map(sec => ({ sec, blocks: [
+    ...PB.BLOCKS.filter(b => b.sec === sec && b.when(c)).map(b => ({ b, on: !c.off.includes(b.id), text: blockText(c, b), edited: !!(c.overrides && c.overrides[b.id] != null && !fixedBlock(b)) })),
+    ...((c.addons && c.addons[sec]) || []).filter(t => String(t || "").trim()).map((t, i) => ({ b: ADDON(sec, i), on: true, text: t, added: true })),
+  ] }));
 }
 function sectionsFrom(c) {
   const out = {};
@@ -171,5 +183,5 @@ function heuristicSectionFor(chunk) {
   return "flows";
 }
 
-const PromptCore = { words, tagLine, assemble, sectionsFrom, header, toMarkdown, blockTags, personaBlock, validate, movingParts, lineDiff, heuristicMap, splitFeedback, chunkPrompt, heuristicSectionFor };
+const PromptCore = { blockText, fixedBlock, words, tagLine, assemble, sectionsFrom, header, toMarkdown, blockTags, personaBlock, validate, movingParts, lineDiff, heuristicMap, splitFeedback, chunkPrompt, heuristicSectionFor };
 if (typeof module !== "undefined" && module.exports) module.exports = PromptCore;

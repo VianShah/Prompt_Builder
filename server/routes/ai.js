@@ -3,6 +3,9 @@ const ai = require('../lib/aiTasks');
 const { h, fail } = require('../lib/util');
 const r = express.Router();
 r.post('/ai/review', h(async (req, res) => {
+  const { blocks, steps } = req.body || {};
+  // The wizard sends its blocks, so each issue can come back with a fix to apply in place.
+  if (Array.isArray(blocks) && blocks.length) return res.json(await ai.reviewWithFixes({ blocks, steps }));
   const md = String((req.body || {}).markdown || '');
   if (md.length < 100) throw fail(400, 'Nothing to review.');
   res.json(await ai.review(md));

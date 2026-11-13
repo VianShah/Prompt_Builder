@@ -111,7 +111,7 @@ function diffHtml(a, b, opts = {}) {
       : `<div class="cv-split"><div class="cv-col"><div class="cv-lbl">Before</div>${ctx(h.pre)}<div class="cv-txt">${w.left}</div>${ctx(h.post)}</div><div class="cv-col"><div class="cv-lbl">After</div>${ctx(h.pre)}<div class="cv-txt">${w.right}</div>${ctx(h.post)}</div></div>`;
     return `<div class="cv-card ${h.kind}">${head}${body}</div>`;
   }).join("");
-  return `<div class="cv">${bar}${cards}</div>`;
+  return `<div class="cv">${opts.bare ? "" : bar}${cards}</div>`;
 }
 // Save an edited part of a drafted fix, or undo just that part.
 function hunkChange(el, save) {
@@ -793,7 +793,7 @@ function stepAssembly(c) {
        <button class="btn sm ghost" data-act="mv" data-sec="${s.sec}" data-d="-1" aria-label="Move up" ${i === 0 ? "disabled" : ""}>↑</button><button class="btn sm ghost" data-act="mv" data-sec="${s.sec}" data-d="1" aria-label="Move down" ${i === asm.length - 1 ? "disabled" : ""}>↓</button></div>
       <div class="blocks">${s.blocks.map(x => `<div class="blk ${x.on ? "" : "off"}">
         ${OPTIONAL.has(x.b.id) ? `<input type="checkbox" id="blk-${x.b.id}" data-act-check="blk" data-id="${x.b.id}" ${x.on ? "checked" : ""} aria-label="Include ${esc(x.b.t)}" style="margin-top:3px;accent-color:var(--accent)">` : `<span class="lock" style="width:13px;text-align:center" title="${x.b.edit}">${x.b.edit === "locked" ? "■" : "·"}</span>`}
-        <div class="bt"><b>${esc(x.b.t)}</b> <code class="muted">${x.b.id}</code>${L.showTags ? `<pre class="prompt" style="margin-top:6px;max-height:200px">${esc(x.text)}</pre>` : ""}</div>
+        <div class="bt"><b>${esc(x.b.t)}</b> <code class="muted">${x.b.id}</code>${x.edited || x.added ? ` <span class="chip acc">${x.added ? "added in review" : "edited in review"}</span> <a href="#" class="small" data-act="blk-reset" data-id="${x.b.id}">${x.added ? "Remove" : "Restore original"}</a>` : ""}${L.showTags ? `<pre class="prompt" style="margin-top:6px;max-height:200px">${esc(x.text)}</pre>` : ""}</div>
         <div class="row" style="gap:4px">${layerChip(x.b.layer)}<span class="chip src">${esc(x.b.src)}</span></div></div>`).join("")}</div>
     </div>`).join("")}</div></div>`;
 }
@@ -807,9 +807,29 @@ function stepValidate(c, vals) {
    <div id="aiReview" class="stack" style="gap:6px;margin-top:10px">${R.aiReview ? renderReview(R.aiReview) : ""}</div></div>
   </div>`;
 }
+// AI review results. Each issue carries a fix that can be applied right here: new wording for a block,
+// an added rule, or the setup step to change. Applied fixes can be undone.
+function curBlockText(id) { for (const sec of assemble(L.cfg)) { const x = sec.blocks.find(y => y.b.id === id); if (x) return x.text; } return null; }
 function renderReview(list) {
   if (!list.length) return `<div class="vitem ok"><span class="ic">✓</span><div class="vt"><b>No issues found by the AI review</b></div></div>`;
-  return list.map(r => `<div class="vitem ${r.severity === "high" ? "err" : r.severity === "medium" ? "warn" : "info"}"><span class="ic">${r.severity === "high" ? "✕" : "!"}</span><div class="vt"><b>${esc(r.section)}: ${esc(r.issue)}</b><span>${esc(r.suggestion)}</span></div></div>`).join("");
+  const open = list.filter(r => r.fix && r.fix.type !== "setting" && !r.applied && !(r.fix.type === "edit" && curBlockText(r.fix.block) !== r.fix.before));
+  return `${open.length > 1 ? `<div class="row" style="justify-content:space-between"><span class="small muted">${open.length} fixes ready to apply</span><button class="btn sm primary" data-act="rv-all">Apply all ${open.length} fixes</button></div>` : ""}
+  ${list.map((r, i) => {
+    const f = r.fix, lvl = r.severity === "high" ? "err" : r.severity === "medium" ? "warn" : "info";
+    const stale = f && f.type === "edit" && !r.applied && curBlockText(f.block) !== f.before;
+    const body = !f ? `<div class="small muted">No automatic fix for this one. ${esc(r.suggestion)}</div>`
+      : f.type === "setting" ? `<div class="row" style="gap:8px"><span class="small"><b>Change on ${esc(f.step)}:</b> ${esc(f.change)}</span><button class="btn sm" data-act="step" data-i="${STEPS.indexOf(f.step)}">Go to ${esc(f.step)}</button></div>`
+      : `${f.type === "edit" ? `<div class="small muted">Rewords <code>${esc(f.block)}</code> in ${esc(secTitle(f.sec))}</div>${diffHtml(f.before, f.text, { bare: true })}` : `<div class="small muted">Adds a rule to ${esc(secTitle(f.sec))}</div>${diffHtml("", f.text, { bare: true })}`}
+        <div class="row" style="gap:8px">${r.applied ? `<span class="small" style="color:var(--ok)"><b>✓ Fixed</b></span><a href="#" class="small" data-act="rv-undo" data-i="${i}">Undo</a>` : stale ? `<span class="small" style="color:var(--warn)">This block changed since the review. Run the review again.</span>` : `<button class="btn sm primary" data-act="rv-apply" data-i="${i}">Apply fix</button>`}</div>`;
+    return `<div class="fb" style="gap:8px;${r.applied ? "background:var(--sunk);box-shadow:none" : ""}"><div class="row" style="gap:8px;align-items:flex-start"><span class="sev ${esc(r.severity)}"></span><div style="flex:1;min-width:0"><b>${esc(secTitle(r.section) || r.section)}: ${esc(r.issue)}</b><div class="small muted">${esc(r.suggestion)}</div></div><span class="chip ${lvl}">${esc(r.severity)}</span></div>${body}</div>`;
+  }).join("")}`;
+}
+function applyReviewFix(r) {
+  const f = r.fix, c = L.cfg; c.overrides = c.overrides || {}; c.addons = c.addons || {};
+  if (!f || f.type === "setting" || r.applied) return false;
+  if (f.type === "edit") { if (curBlockText(f.block) !== f.before) return false; r.undo = { prev: c.overrides[f.block] }; c.overrides[f.block] = f.text; }
+  else { c.addons[f.sec] = [...(c.addons[f.sec] || []), f.text]; }
+  r.applied = true; return true;
 }
 function stepGenerate(c, vals) {
   const errs = vals.filter(v => v.lvl === "err");
@@ -1779,7 +1799,16 @@ const ACT = {
   }, "Thinking…"),
   canon: () => { L.cfg.order = [...CANON]; commit(); },
   mv: el => { const o = L.cfg.order, i = o.indexOf(el.dataset.sec), j = i + (+el.dataset.d); if (j < 0 || j >= o.length) return; [o[i], o[j]] = [o[j], o[i]]; commit(); },
-  "ai-review": el => run(el, async () => { const r = await api("POST", "/ai/review", { markdown: toMarkdown(header(L.cfg, "draft"), L.cfg.order, sectionsFrom(L.cfg), false) }); R.aiReview = r.issues; render(); }, "Reviewing…"),
+  "ai-review": el => run(el, async () => {
+    const blocks = assemble(L.cfg).flatMap(sec => sec.blocks.filter(x => x.on).map(x => ({ id: x.b.id, sec: sec.sec, locked: fixedBlock(x.b), text: x.text })));
+    const r = await api("POST", "/ai/review", { blocks, steps: STEPS.slice(0, 7) }); R.aiReview = r.issues; render(); }, "Reviewing (about a minute)…"),
+  "rv-apply": el => { const r = (R.aiReview || [])[+el.dataset.i]; if (r && applyReviewFix(r)) { commit(); toast("Fix applied. It's in the prompt now."); } else toast("That fix no longer fits. Run the review again."); },
+  "rv-all": () => { let n = 0; (R.aiReview || []).forEach(r => { if (applyReviewFix(r)) n++; }); commit(); toast(`${n} fix${n === 1 ? "" : "es"} applied.`); },
+  "rv-undo": el => { const r = (R.aiReview || [])[+el.dataset.i], c = L.cfg; if (!r || !r.applied) return; const f = r.fix;
+    if (f.type === "edit") { if (r.undo && r.undo.prev != null) c.overrides[f.block] = r.undo.prev; else delete c.overrides[f.block]; }
+    else { const a = c.addons[f.sec] || [], k = a.lastIndexOf(f.text); if (k >= 0) a.splice(k, 1); }
+    r.applied = false; commit(); toast("Undone."); },
+  "blk-reset": el => { const c = L.cfg, id = el.dataset.id, m = id.match(/^ADD-(.+)-(\d+)$/); if (m) { if (c.addons && c.addons[m[1]]) c.addons[m[1]].splice(+m[2] - 1, 1); } else if (c.overrides) delete c.overrides[id]; commit(); },
   "save-prompt": el => run(el, async () => {
     const c = L.cfg, v = L.genVersion || "1.0";
     const r = await api("POST", "/prompts", { name: `${c.client.name || "Untitled"} · ${bucketT(c.bucket)}`, cfg: c, sections: sectionsFrom(c), order: c.order, version: v, agentId: L.linkAgent || null });
