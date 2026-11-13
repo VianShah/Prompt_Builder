@@ -26,7 +26,7 @@ async function withTimeout(fn, ms) {
 // profile id (global.anthropic.claude-sonnet-5-5); the plain id is refused for on-demand use.
 // Throttling is retried with backoff.
 async function callClaude(prompt, { maxTokens, timeoutMs }) {
-  const url = `https://bedrock-runtime.${config.claude.region}.amazonaws.com/model/${encodeURIComponent(config.claude.model)}/converse`;
+  const url = `${process.env.BEDROCK_ENDPOINT || `https://bedrock-runtime.${config.claude.region}.amazonaws.com`}/model/${encodeURIComponent(config.claude.model)}/converse`;
   for (let attempt = 0; ; attempt++) {
     const out = await withTimeout(async signal => {
       const res = await fetch(url, {
@@ -46,6 +46,28 @@ async function callClaude(prompt, { maxTokens, timeoutMs }) {
     }, timeoutMs);
     if (!out.throttled) return out.text;
     if (attempt >= 4) throw Object.assign(new Error('claude bedrock throttled'), { code: 'provider_error', detail: 'ThrottlingException after retries' });
+    await new Promise(r => setTimeout(r, 2000 * 2 ** attempt));
+  }
+}
+
+// Read images with Claude on Bedrock (the Converse API takes image blocks; the GLM and Gemini fallbacks
+// here are text only). images: [{ data: base64, format: 'jpeg'|'png'|'gif'|'webp' }]. Returns plain text.
+async function readImages(prompt, images, { maxTokens = 6000, timeoutMs } = {}) {
+  if (!config.claude.apiKey) throw Object.assign(new Error('Reading pictures needs Claude on Bedrock (AWS_BEARER_TOKEN_BEDROCK).'), { code: 'no_llm', publicMessage: 'Reading pictures needs Claude on Bedrock. Set AWS_BEARER_TOKEN_BEDROCK on the server.' });
+  const url = `${process.env.BEDROCK_ENDPOINT || `https://bedrock-runtime.${config.claude.region}.amazonaws.com`}/model/${encodeURIComponent(config.claude.model)}/converse`;
+  // Bedrock takes the image bytes base64-encoded inside the JSON.
+  const content = [...images.map(i => ({ image: { format: i.format, source: { bytes: Buffer.isBuffer(i.data) ? i.data.toString('base64') : String(i.data) } } })), { text: prompt }];
+  for (let attempt = 0; ; attempt++) {
+    const out = await withTimeout(async signal => {
+      const res = await fetch(url, { method: 'POST', signal, headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${config.claude.apiKey}` },
+        body: JSON.stringify({ messages: [{ role: 'user', content }], inferenceConfig: { maxTokens: Math.min(maxTokens, 16000) } }) });
+      const body = await res.json().catch(() => ({}));
+      if (res.status === 429 || res.status >= 500 || /Throttling|ServiceUnavailable|InternalServer/i.test(body.__type || body.message || '')) return { throttled: true };
+      if (!res.ok) throw Object.assign(new Error(`claude bedrock http ${res.status}`), { code: 'provider_error', detail: String(body.message || JSON.stringify(body)).slice(0, 300) });
+      return { text: ((body.output && body.output.message && body.output.message.content) || []).map(p => p.text || '').join('') };
+    }, timeoutMs || 180000);
+    if (!out.throttled) return out.text;
+    if (attempt >= 3) throw Object.assign(new Error('claude bedrock throttled'), { code: 'provider_error', detail: 'ThrottlingException after retries' });
     await new Promise(r => setTimeout(r, 2000 * 2 ** attempt));
   }
 }
@@ -104,4 +126,4 @@ async function json(prompt, { maxTokens = 8000, timeoutMs } = {}) {
   throw lastErr;
 }
 
-module.exports = { json, available, labels: () => available().map(p => PROVIDERS[p].label()) };
+module.exports = { readImages, vision: () => !!config.claude.apiKey, json, available, labels: () => available().map(p => PROVIDERS[p].label()) };

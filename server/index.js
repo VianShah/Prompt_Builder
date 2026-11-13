@@ -17,7 +17,7 @@ app.post('/api/logout', auth.logout);
 app.use('/api', auth.requireUser);
 app.get('/api/me', (req, res) => res.json({ user: req.user, selfApprove: config.selfApprove }));
 app.get('/api/health', async (req, res) => res.json({
-  db: await db.ping(), llm: llm.labels(), sarvamPush: config.sarvamPush, library: require('./lib/libraryStore').status(),
+  db: await db.ping(), llm: llm.labels(), vision: llm.vision(), sarvamPush: config.sarvamPush, library: require('./lib/libraryStore').status(),
 }));
 app.use('/api', require('./routes/agents'));
 app.use('/api', require('./routes/prompts'));

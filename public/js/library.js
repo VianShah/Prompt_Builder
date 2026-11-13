@@ -239,7 +239,7 @@ function skEditor(p) {
 function libDocsPanel(type, lib) {
   const I = kbImp(), ready = I.files.filter(f => f.status === "ready");
   return `<section class="np-sec"><h3>From documents</h3><p class="small muted">Scripts, product sheets, policies, compliance notes. The AI drafts ${lib.skeleton ? "rules for each section" : "the structure and its rules"}, using only what the documents say; missing details are marked [CONFIRM: …].</p>
-   <div class="dropzone" id="kbDrop">Drop files or folders, or <label style="color:var(--accent);cursor:pointer;text-decoration:underline">choose files<input type="file" id="kbFiles" multiple accept=".xlsx,.xls,.csv,.docx,.pdf,.txt,.md,.json,.html,.htm" hidden></label></div>
+   <div class="dropzone" id="kbDrop">Drop files or folders, or <label style="color:var(--accent);cursor:pointer;text-decoration:underline">choose files<input type="file" id="kbFiles" multiple accept=".xlsx,.xls,.csv,.docx,.pptx,.pdf,.txt,.md,.json,.html,.htm,.jpg,.jpeg,.png,.gif,.webp" hidden></label></div>
    ${I.files.length ? `<div class="small">${I.files.map(f => `${esc(f.name)} <span class="muted">(${f.status === "ready" ? `${fmtN((f.text || "").length)} characters` : esc(f.note || f.status)})</span>`).join(" · ")}</div>` : ""}
    <div class="row" style="gap:8px"><button class="btn primary ai" data-act="lib-docs-go" ${ready.length ? "" : "disabled"}>Draft from ${ready.length} file${ready.length === 1 ? "" : "s"}</button><a href="#" class="small" data-act="lib-docs-toggle">Close</a></div></section>`;
 }
