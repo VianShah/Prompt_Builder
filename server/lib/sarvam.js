@@ -305,7 +305,7 @@ function extractInstructions(app) {
 
 const shape = app => (app && typeof app === 'object' ? Object.keys(app) : [typeof app]);
 
-// The prompt Kollect actually calls: the version Kollect pinned, else the newest *committed*
+// The prompt the agent runs: the newest *committed*
 // version. A bare agents.get reads the draft, which can hold uncommitted edits, so never use it.
 // agents.get returns a summary by default; include=['prompt_text'] gives each state's full
 // instructions (prompt_text.states.<state>.instructions) plus the shared global_prompt.

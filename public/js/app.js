@@ -266,12 +266,12 @@ function viewOverview() {
   const live = (R.prompts || []).filter(p => p.live).length;
   const pending = (R.approvals || []).filter(v => v.status === "pending").length;
   const create = STEPS.map((s, i) => `<span class="st"><i>${String(i + 1).padStart(2, "0")}</i>${s}</span>`).join('<span class="ar">→</span>');
-  const improve = ["Sync live agents from Kollect", "Import the live Sarvam prompt", "Bring in UAT feedback", "Map items to section and block", "Draft or hand-edit the fix", "New version → approval", "Commit in Sarvam, confirm, pin in Kollect"].map((s, i) => `<span class="st"><i>${String(i + 1).padStart(2, "0")}</i>${s}</span>`).join('<span class="ar">→</span>');
+  const improve = ["Refresh agents from Sarvam", "Import the live Sarvam prompt", "Bring in UAT feedback", "Map items to section and block", "Draft or hand-edit the fix", "New version → approval", "Push to Sarvam (UAT first)"].map((s, i) => `<span class="st"><i>${String(i + 1).padStart(2, "0")}</i>${s}</span>`).join('<span class="ar">→</span>');
   return `
-  <div class="view-head"><div><h1>How the prompt system works</h1><p>Prompts are built from tested blocks or imported from the live Sarvam agents in Kollect. Every change is traced to its block, versioned, approved, and confirmed against the Sarvam version Kollect calls.</p></div>
+  <div class="view-head"><div><h1>How the prompt system works</h1><p>Prompts are built from tested blocks or imported from the live Sarvam agents. Every change is traced to its block, versioned, approved, and confirmed against the Sarvam version Kollect calls.</p></div>
   <div class="row"><a class="btn primary" href="#agents">Agents</a><a class="btn" href="#create">Create a prompt</a></div></div>
   <div class="stack">
-  <div class="kpis">${k((R.agents || []).length, "Sarvam agents synced from Kollect", "#agents")}${k((R.prompts || []).length, "Prompts tracked", "#improve")}${k(live, "Prompts with a live version", "#improve")}${k(pending, "Versions waiting for approval", "#approvals")}${k((R.core || []).length, "Shared-core fixes logged", "#library")}</div>
+  <div class="kpis">${k((R.agents || []).length, "Sarvam agents", "#agents")}${k((R.prompts || []).length, "Prompts tracked", "#improve")}${k(live, "Prompts with a live version", "#improve")}${k(pending, "Versions waiting for approval", "#approvals")}${k((R.core || []).length, "Shared-core fixes logged", "#library")}</div>
   <div class="panel stack"><div><h2>Journey 1 · Improve a live agent</h2><p class="muted small">The everyday path once agents are in production.</p></div><div class="journey">${improve}</div></div>
   <div class="panel stack"><div><h2>Journey 2 · Create a prompt end to end</h2><p class="muted small">For a new client or bucket. Saved prompts follow the same approval path.</p></div><div class="journey">${create}</div></div>
   <div class="grid2">
@@ -291,7 +291,7 @@ function healthRows() {
   const row = (ok, t, d) => `<div class="vitem ${ok ? "ok" : "warn"}"><span class="ic">${ok ? "✓" : "!"}</span><div class="vt"><b>${t}</b><span>${d}</span></div></div>`;
   return `<div class="stack" style="gap:6px">
    ${row(h.db && h.db.ok && h.db.kind === "postgres", "Database", h.db ? (h.db.kind === "postgres" ? (h.db.ok ? "Render Postgres connected." : "Postgres error: " + esc(h.db.error)) : "Local file store. Set DATABASE_URL on Render or data is lost on each deploy.") : "Unknown")}
-   ${row(h.kollect && h.kollect.enabled, "Kollect dashboard", h.kollect && h.kollect.enabled ? esc(h.kollect.baseUrl) : "KOLLECT_BASE_URL is not set, so agents can't be synced.")}
+
    ${row(h.llm && h.llm.length, "AI model", h.llm && h.llm.length ? esc(h.llm.join(" → ")) : "No GEMINI_API_KEY or GLM key: feedback is mapped with keyword rules and AI drafting is off.")}
    ${row(R.sarvam && R.sarvam.hasToken, "Sarvam", "Prompts are read from Sarvam automatically, and approved changes are pushed back with Push to Sarvam.")}
   </div>`;
@@ -300,11 +300,11 @@ function healthRows() {
 // ---------- LIVE AGENTS ----------
 function viewAgents() {
   const ag = R.agents || [];
-  const kOn = R.health && R.health.kollect && R.health.kollect.enabled;
+
   const sOn = R.sarvam && R.sarvam.hasToken && !R.sarvam.expired;
   return `
   <div class="view-head"><div><h1>Agents</h1><p>${ag.length ? `${ag.length} agent${ag.length === 1 ? "" : "s"} in your Sarvam workspace. ` : ""}Open one to read its prompt, review calls and make changes.</p></div>
-  <div class="row" style="gap:8px"><button class="btn" data-act="sync" ${kOn || sOn ? "" : "disabled"} title="Reads every agent and its newest committed version from Sarvam, and talk time and calls from Kollect">↻ Refresh</button>
+  <div class="row" style="gap:8px"><button class="btn" data-act="sync" ${sOn ? "" : "disabled"} title="Reads every agent and its newest committed version from Sarvam, and talk time and calls from Kollect">↻ Refresh</button>
    <details class="more"><summary class="btn" aria-label="More actions">⋯</summary><div class="more-pop">
      <a href="#compare">Compare two agents</a>
      ${canDo("edit") && sOn ? `<a href="#" data-act="pull-all" title="Reads every agent's prompt and versions from Sarvam, including agents the builder hasn't opened yet">Load all prompts from Sarvam</a>` : ""}
@@ -313,8 +313,8 @@ function viewAgents() {
   ${sarvamPanel()}
   ${pullBar()}
   ${R.syncNote ? `<div class="notice"><span>${R.syncNote}</span><a href="#" class="small" data-act="sync-note-x">dismiss</a></div>` : ""}
-  ${!kOn ? `<div class="small muted" style="margin:-8px 0 16px">Kollect isn't connected, so talk time and pinning aren't shown. Agents and prompts come straight from Sarvam.</div>` : ""}
-  ${ag.length ? `<div class="alist">${[...ag].sort((x, y) => (x.inKollect === false) - (y.inKollect === false)).map(agentCard).join("")}</div>` : `<div class="empty">No agents yet. ${kOn || sOn ? "Click Refresh." : "Connect Sarvam first."}</div>`}
+
+  ${ag.length ? `<div class="alist">${[...ag].map(agentCard).join("")}</div>` : `<div class="empty">No agents yet. ${sOn ? "Click Refresh." : "Connect Sarvam first."}</div>`}
   ${(() => { const other = (R.prompts || []).filter(p => !p.agentId); return other.length ? `<h2 class="group">Prompts not linked to an agent</h2><div class="alist">${other.map(p => `<a class="arow" href="#improve" data-act="open-prompt" data-id="${p.id}"><div class="nm"><b>${esc(p.name)}</b><div class="small muted">${p.latest ? "v" + esc(p.latest.v) : ""}</div></div><div>${p.latest ? statusPill(p.latest.status) : ""}</div><div></div></a>`).join("")}</div>` : ""; })()}`;
 }
 // "Load all prompts": progress while it runs in the background, and what happened when it's done.
@@ -375,11 +375,11 @@ function agentCard(a) {
   const uatOf = (R.agents || []).find(x => x.uatAgentId === a.id);
   const lv = p && p.live && p.live.sarvamVersion ? Number(p.live.sarvamVersion) : null;
   const newer = lv && a.sarvamNewest && a.sarvamNewest > lv ? `<span class="chip warn" title="Sarvam has a newer committed version than the one shown here. Open the agent and use ⋯ → Reload prompt from Sarvam.">Sarvam has v${esc(a.sarvamNewest)}</span>` : "";
-  const notK = a.inKollect === false ? `<span class="chip" title="Kollect doesn't call this agent, so there's no talk time or pinning">Not in Kollect</span>` : "";
+  const notK = "";
   return `<a class="arow" href="#improve" data-act="open-agent" data-id="${esc(a.id)}">
    <div class="nm" style="min-width:0"><b>${esc(a.name)}</b><div class="small muted">${esc(a.client || a.sarvamName || "")}${p && p.live && p.live.sarvamVersion ? ` · Sarvam v${esc(p.live.sarvamVersion)}` : a.sarvamNewest ? ` · Sarvam v${esc(a.sarvamNewest)} (prompt not loaded yet)` : ""}</div>${flag || uatOf || newer || notK ? `<div class="row" style="margin-top:6px;gap:4px">${flag}${newer}${notK}${uatOf ? `<span class="chip">UAT for ${esc(uatOf.name)}</span>` : ""}</div>` : ""}</div>
-   <div class="stat"><b>${fmtDur(a.talkSeconds)}</b><span>talk time</span></div>
-   <div class="stat calls"><b>${a.callsPlaced || 0}</b><span>calls</span></div>
+
+
   </a>`;
 }
 async function reloadAgents() { if (route() === "improve") return go(); await Promise.all([loadAgents(true), loadPrompts(true), api("GET", "/sarvam/status").then(r => R.sarvam = r).catch(() => { })]); render(); }
@@ -399,7 +399,7 @@ async function callsModal(a) {
    <div class="row" style="justify-content:space-between"><h2>Conversations · ${esc(a.name)}</h2><button class="btn sm ghost" data-act="close-modal">Close</button></div>
    <div class="small"><b>${fmtDur(u.talkSeconds)}</b> talk time · ${u.callsPlaced || 0} calls placed · ${u.callsAnswered || 0} answered</div>
    <div class="row" style="gap:6px">${p ? `<a class="btn sm primary" href="#improve" data-act="open-prompt" data-id="${p.id}">Edit this agent's prompt</a>` : `<span class="small muted">Import the live prompt to edit it from here.</span>`}</div>
-   ${r.calls.length ? r.calls.map(one).join("") : `<div class="empty">No conversations recorded yet. Calls placed from Kollect after this connection is live will appear here.</div>`}</div>`;
+   ${r.calls.length ? r.calls.map(one).join("") : `<div class="empty">No conversations recorded yet.</div>`}</div>`;
 }
 function importModal(a) {
   $("#modal").innerHTML = `<div class="panel stack" role="dialog" aria-modal="true" aria-labelledby="imH">
@@ -410,7 +410,7 @@ function importModal(a) {
    </ol>
    <textarea id="imText" rows="12" class="mono" placeholder="Paste the full Sarvam instructions here…"></textarea>
    <div class="row"><label class="btn sm">Upload file<input type="file" id="imFile" accept=".txt,.md,.docx" hidden></label>
-    <label class="f" style="width:170px">Sarvam version <span class="hint">(blank = what Kollect calls)</span><input type="number" id="imVer" min="1"></label></div>
+    <label class="f" style="width:170px">Sarvam version <span class="hint">(blank = newest)</span><input type="number" id="imVer" min="1"></label></div>
    <div class="row"><button class="btn primary" data-act="do-import" data-id="${esc(a.id)}">Import</button><span class="small muted" id="imMsg"></span></div></div>`;
   $("#modal").hidden = false; $("#imText").focus();
 }
@@ -851,13 +851,13 @@ function agentHead(agent, cur) {
   const title = agent ? agent.name : cur.prompt.name;
   const uat = agent && agent.uatAgentId ? (R.agents || []).find(a => a.id === agent.uatAgentId) : null;
   const uatOf = agent ? (R.agents || []).find(a => a.uatAgentId === agent.id) : null;
-  const sub = agent ? [agent.client, live && live.sarvamVersion ? `live in Sarvam v${live.sarvamVersion}` : null, agent.sarvam && agent.sarvam.mode === "pinned" ? `pinned in Kollect` : null, uat ? `UAT agent: ${uat.name}` : null, uatOf ? `UAT agent for ${uatOf.name}` : null, agent.clonedFrom ? `copied from ${agent.clonedFrom.name}` : null, agent.inKollect === false ? "not in Kollect" : null, agent.sarvamName && agent.sarvamName !== agent.name ? `Sarvam name: ${agent.sarvamName}` : null].filter(Boolean).join(" · ") : "Not linked to a live agent";
+  const sub = agent ? [agent.client, live && live.sarvamVersion ? `live in Sarvam v${live.sarvamVersion}` : null, uat ? `UAT agent: ${uat.name}` : null, uatOf ? `UAT agent for ${uatOf.name}` : null, agent.clonedFrom ? `copied from ${agent.clonedFrom.name}` : null, agent.sarvamName && agent.sarvamName !== agent.name ? `Sarvam name: ${agent.sarvamName}` : null].filter(Boolean).join(" · ") : "Not linked to a live agent";
   const more = agent ? `<details class="more"><summary class="btn sm ghost">⋯</summary><div class="more-pop">
      ${canDo("approve") ? `<a href="#" data-act="uat-modal" data-id="${esc(agent.id)}">${uat ? "Change UAT agent…" : "Set a UAT agent…"}</a><a href="#" data-act="clone-modal" data-id="${esc(agent.id)}">New agent from this one…</a>` : ""}
      ${R.sarvam && R.sarvam.hasToken && canDo("edit") ? `<a href="#" data-act="pull" data-id="${esc(agent.id)}">Reload prompt from Sarvam</a>` : ""}
      ${canDo("edit") ? `<a href="#" data-act="import" data-id="${esc(agent.id)}">Paste prompt manually</a>` : ""}
-     <a href="#" data-act="sv" data-id="${esc(agent.id)}">Check which version Kollect calls</a>
-     ${agent.sarvam && agent.sarvam.mode === "pinned" && canDo("rollback") ? `<a href="#" data-act="unpin" data-id="${esc(agent.id)}">Unpin (always use newest)</a>` : ""}
+
+
     </div></details>` : "";
   return `<a class="back" href="#agents">← All agents</a>
   <div class="view-head" style="margin-top:6px"><div><h1>${esc(title)}</h1><p>${esc(sub)}</p></div>
@@ -954,8 +954,8 @@ function viewImprove() {
   const body = tab === "calls" ? callsTab(agent) : tab === "changes" ? changesTab(cur) : tab === "history" ? historyTab(cur) : tab === "settings" ? settingsTab(cur, agent) : promptTab(cur);
   const lvv = liveOf(cur), shown = lvv && lvv.sarvamVersion ? Number(lvv.sarvamVersion) : null;
   const behind = agent && shown && agent.sarvamNewest && agent.sarvamNewest > shown
-    ? `<div class="nextstep" style="border-color:var(--warn)"><span style="flex:1;min-width:200px"><b>Sarvam has a newer version (v${esc(agent.sarvamNewest)}) than the builder shows (v${shown}).</b>${agent.sarvam && agent.sarvam.mode === "pinned" ? ` Kollect is pinned to v${esc(agent.sarvam.active)}, which is why the builder stayed on it.` : ""} ${canDo("edit") ? "Reload it to bring in what's in Sarvam now." : ""}</span>${canDo("edit") && R.sarvam && R.sarvam.hasToken ? `<button class="btn sm primary" data-act="pull" data-id="${esc(agent.id)}">Reload from Sarvam</button>` : ""}</div>` : "";
-  const kdown = agent && agent.kollectDown ? `<div class="notice"><span>Kollect couldn't be reached on the last refresh, so this shows Sarvam's newest committed version (v${esc(agent.sarvamNewest || "?")}) and not a version Kollect may be pinned to.</span></div>` : "";
+    ? `<div class="nextstep" style="border-color:var(--warn)"><span style="flex:1;min-width:200px"><b>Sarvam has a newer version (v${esc(agent.sarvamNewest)}) than the builder shows (v${shown}).</b> ${canDo("edit") ? "Reload it to bring in what's in Sarvam now." : ""}</span>${canDo("edit") && R.sarvam && R.sarvam.hasToken ? `<button class="btn sm primary" data-act="pull" data-id="${esc(agent.id)}">Reload from Sarvam</button>` : ""}</div>` : "";
+  const kdown = "";
   return agentHead(agent, cur) + behind + kdown + lostNotice(cur) + nextStep(cur) + tabs + (tab === "prompt" ? ahead : "") + body;
 }
 // Light markdown, shown the way Sarvam's editor shows the instructions: headings, bullets,
@@ -1203,7 +1203,7 @@ function settingsTab(cur, agent) {
      <label class="f">Pitch <span class="hint">-0.2 – 0.2</span><input type="number" min="-0.2" max="0.2" step="0.01" data-cfg="pitch" value="${esc(e.pitch)}" ${ro}></label></div>
     ${voice && voice.description ? `<div class="small muted">${esc(voice.description)}</div>` : ""}</div>
    <div class="panel stack"><div class="row" style="justify-content:space-between"><h2>Variables · ${e.vars.filter(v => !v.remove).length}</h2>${canDo("edit") ? `<button class="btn sm" data-act="cfg-var-add">+ Add variable</button>` : ""}</div>
-    <div class="small muted">Call inputs are filled by Kollect when it places a call. "After call" variables are filled by Sarvam from the conversation. A variable the greeting or prompt still uses can't be removed.</div>
+    <div class="small muted">Call inputs are filled by the dialer when it places a call. "After call" variables are filled by Sarvam from the conversation. A variable the greeting or prompt still uses can't be removed.</div>
     <div class="tbl-wrap"><table class="vartbl"><thead><tr><th>Name</th><th>Description</th><th>Test value / how it's filled</th><th></th><th></th></tr></thead><tbody>${e.vars.map(varRow).join("")}</tbody></table></div></div>
    ${canDo("edit") ? `<div class="row"><input type="text" id="cfg-note" placeholder="What changed and why (optional)" style="flex:1;min-width:220px" value="${esc(e.note)}" data-cfg="note"><button class="btn primary" data-act="cfg-save">Check with Sarvam and save as draft</button><button class="btn ghost" data-act="cfg-reset">Undo changes</button></div>` : ""}
   </div>`;
@@ -1587,7 +1587,7 @@ function viewApprovals() {
      <ol class="steps-live" style="margin:0;padding:0">
       <li><div><b>Copy the approved prompt</b> <button class="btn sm" data-act="copy-ver" data-pid="${v.promptId}" data-vid="${v.id}">Copy prompt</button><div class="small muted">Block tags are removed from the copy.</div></div></li>
       <li><div><b>Paste it into Sarvam and commit</b><div class="small muted">${agent ? `Agents → ${esc(agent.client)} → Canvas → Instructions. Save as a new version.` : "This prompt isn't linked to a live agent. Paste it into the agent in Sarvam and commit."}</div></div></li>
-      <li><div><b>Confirm here</b>${canDo("golive") ? `<div class="row" style="margin-top:6px"><label class="f" style="width:150px">Sarvam version <span class="hint">${agent ? "(blank = newest)" : ""}</span><input type="number" min="1" id="sv-${v.id}"></label>${agent ? `<label class="check small" style="align-self:flex-end;margin-bottom:8px"><input type="checkbox" id="pin-${v.id}" checked> Pin it in Kollect</label>` : ""}<button class="btn sm primary" style="align-self:flex-end" data-act="go-live" data-vid="${v.id}">Confirm live</button></div><div class="small muted">${agent ? "The builder checks Sarvam through Kollect that the version exists and is newer than the live one." : ""}</div>` : `<div class="small muted">An approver confirms this step.</div>`}</div></li>
+      <li><div><b>Confirm here</b>${canDo("golive") ? `<div class="row" style="margin-top:6px"><label class="f" style="width:150px">Sarvam version <span class="hint">${agent ? "(blank = newest)" : ""}</span><input type="number" min="1" id="sv-${v.id}"></label>${agent ? `` : ""}<button class="btn sm primary" style="align-self:flex-end" data-act="go-live" data-vid="${v.id}">Confirm live</button></div><div class="small muted">${agent ? "The builder checks Sarvam that the version exists and is newer than the live one." : ""}</div>` : `<div class="small muted">An approver confirms this step.</div>`}</div></li>
      </ol></details>` : ""}
    </div>`; };
   return `
@@ -1622,7 +1622,7 @@ async function pushModal(vid, allowDraftChanges, target) {
       <div class="row"><button class="btn sm" data-act="push-preview" data-vid="${vid}" data-allow="1" data-target="${uat ? "uat" : ""}">${uat ? "Overwrite them and continue" : "Include them and continue"}</button></div>` : ""}</div>`;
     return;
   }
-  const pinNote = r.kollectPinned ? `Kollect is pinned to Sarvam v${r.kollectPinned}, so leave this ticked or calls stay on the old version.` : "Kollect uses the newest version, so it picks this up even unpinned; pinning makes it immediate and exact.";
+
   $("#modal").innerHTML = `<div class="panel stack" role="dialog" aria-modal="true" style="max-height:88vh;overflow:auto">${head(uat ? `Push to UAT · ${esc(r.uatName)}` : "Promote to live")}
     <div class="vitem ok"><span class="ic">✓</span><div class="vt"><b>Sarvam accepted the dry run</b><span>${r.whole ? `${uat ? esc(r.uatName) + "'s" : "The agent's"} whole prompt will be replaced by this version (${r.chars >= 0 ? "+" : ""}${r.chars} characters)` : r.edits ? `${r.edits} passage${r.edits === 1 ? "" : "s"} will change (${r.chars >= 0 ? "+" : ""}${r.chars} characters); everything else stays exactly as it is` : "The instructions don't change"}${r.baseVersion ? `, based on Sarvam v${r.baseVersion}` : ""}.${r.greeting ? " The greeting is set too, and Sarvam regenerates its translations." : ""}${r.draftDirty ? " Uncommitted Sarvam draft edits are included." : ""}</span></div></div>
     ${r.settings && r.settings.length ? `<div><div class="small muted">Settings changes</div><ul class="small" style="margin:4px 0 0 18px">${r.settings.map(s => `<li>${esc(s)}</li>`).join("")}</ul></div>` : ""}
@@ -1631,7 +1631,7 @@ async function pushModal(vid, allowDraftChanges, target) {
     ${uat ? `<div class="small muted">The UAT agent becomes an exact copy of this version so you can test it on real calls. The live agent doesn't change.</div>
       <div class="row"><button class="btn primary" data-act="push-do" data-vid="${vid}" data-allow="${allowDraftChanges ? 1 : ""}" data-target="uat">Push to UAT</button></div>`
     : `${(() => { const vv = R.cur && R.cur.versions.find(x => x.id === vid), ts = vv && testState(vv); if (!vv || !(R.tests || []).length) return ""; return ts ? (ts.failed ? `<div class="vitem warn"><span class="ic">!</span><div class="vt"><b>${ts.failed} of ${ts.total} regression tests failed on v${esc(vv.v)}</b><span>An old mistake may come back with this version. Check the tests on Make a change before pushing.</span></div></div>` : `<div class="small" style="color:var(--ok)">✓ All ${ts.total} regression tests passed on v${esc(vv.v)}.</div>`) : `<div class="vitem warn"><span class="ic">!</span><div class="vt"><b>Regression tests weren't run on v${esc(vv.v)}</b><span>Run them on Make a change first to check no fixed mistake comes back.</span></div></div>`; })()}
-    <label class="check small"><input type="checkbox" id="push-pin" checked> Pin the new version in Kollect</label><div class="small muted">${pinNote}</div>
+
     <div class="row"><button class="btn primary" data-act="push-do" data-vid="${vid}" data-allow="${allowDraftChanges ? 1 : ""}">Push and go live</button><span class="small muted">Commits a new version in Sarvam. Roll back from the version table if needed.</span></div>`}</div>`;
 }
 // New agent: Sarvam copies an existing agent (prompt, greeting, variables, voice) under a new name.
@@ -1819,8 +1819,8 @@ const ACT = {
   sync: el => run(el, async () => {
     const r = await api("POST", "/agents/sync");
     const bits = [];
-    if (r.kollect && !r.kollect.ok) bits.push(`<b>Kollect couldn't be reached</b> (${esc(r.kollect.error)}). Versions come straight from Sarvam; talk time and calls weren't updated.`);
-    if (r.sarvam && !r.sarvam.ok) bits.push(`<b>Sarvam wasn't read:</b> ${esc(r.sarvam.error)} Only Kollect's agents were refreshed.`);
+
+    if (r.sarvam && !r.sarvam.ok) bits.push(`<b>Sarvam wasn't read:</b> ${esc(r.sarvam.error)}`);
     R.syncNote = bits.join(" ");
     await reloadAgents();
     toast(`${r.synced} agents${r.added ? ` (${r.added} new from Sarvam)` : ""}. ${promptMsg(r.prompts)}`);
@@ -1843,8 +1843,8 @@ const ACT = {
     location.hash = "#agents"; await reloadAgents(); toast("Sarvam is connected with the login from your computer. Click Refresh to load the agents.");
   }, "Checking with Sarvam…"),
   "sarvam-clear": el => run(el, async () => { await api("DELETE", "/sarvam/token"); await reloadAgents(); toast("Sarvam disconnected"); }),
-  sv: el => run(el, async () => { await api("GET", `/agents/${encodeURIComponent(el.dataset.id)}/sarvam?refresh=1`); await loadAgents(true); render(); }, "Checking…"),
-  unpin: el => run(el, async () => { await api("POST", `/agents/${encodeURIComponent(el.dataset.id)}/unpin`); await api("GET", `/agents/${encodeURIComponent(el.dataset.id)}/sarvam`); await loadAgents(true); render(); toast("Kollect now calls the newest Sarvam version"); }),
+
+
   calls: el => callsModal(R.agents.find(a => a.id === el.dataset.id)),
   import: el => importModal(R.agents.find(a => a.id === el.dataset.id)),
   "close-modal": closeModal,
@@ -2087,7 +2087,7 @@ const ACT = {
   undismiss: el => run(el, async () => { const it = item(el.dataset.id); await api("PATCH", `/feedback/${el.dataset.id}`, { status: it.map ? "mapped" : "new" }); await reloadCur(); }),
   cmp: el => { const i = +el.dataset.i; R.cmpOpen = R.cmpOpen === i ? null : i; render(); },
   submit: el => run(el, async () => { await api("POST", `/versions/${el.dataset.vid}/submit`); await reloadCur(); toast("Sent for approval"); }),
-  rollback: el => run(el, async () => { const r = await api("POST", `/versions/${el.dataset.vid}/rollback`); await reloadCur(); toast(r.pinned ? `Rolled back. Kollect now calls Sarvam v${r.sarvamVersion}.` : r.recommitted ? `Rolled back. The prompt of Sarvam v${r.from} is committed again as Sarvam v${r.sarvamVersion}.` : "Rolled back."); }, "Rolling back…"),
+  rollback: el => run(el, async () => { const r = await api("POST", `/versions/${el.dataset.vid}/rollback`); await reloadCur(); toast(r.recommitted ? `Rolled back. The prompt of Sarvam v${r.from} is committed again as Sarvam v${r.sarvamVersion}.` : "Rolled back."); }, "Rolling back…"),
   approve: el => run(el, async () => { await api("POST", `/versions/${el.dataset.vid}/approve`, { note: ($("#note-" + el.dataset.vid) || {}).value }); await go(); toast("Approved"); }),
   reject: el => run(el, async () => { await api("POST", `/versions/${el.dataset.vid}/reject`, { note: ($("#note-" + el.dataset.vid) || {}).value }); await go(); toast("Rejected and sent back to the author"); }),
   "see-diff": el => run(el, () => showDiffModal(el.dataset.pid, el.dataset.vid)),
@@ -2098,16 +2098,16 @@ const ACT = {
       const u = await api("POST", `/versions/${el.dataset.vid}/push`, { allowDraftChanges: el.dataset.allow === "1", target: "uat" });
       closeModal(); await go(); toast(`${u.uatName} now runs this version (Sarvam v${u.sarvamVersion}). Test it, then promote it.`); return;
     }
-    const r = await api("POST", `/versions/${el.dataset.vid}/push`, { allowDraftChanges: el.dataset.allow === "1", pin: $("#push-pin").checked });
+    const r = await api("POST", `/versions/${el.dataset.vid}/push`, { allowDraftChanges: el.dataset.allow === "1" });
     closeModal(); await go();
-    toast(`Live as Sarvam v${r.sarvamVersion} (${r.edits} passage${r.edits === 1 ? "" : "s"} changed)${r.pinned ? ", pinned in Kollect" : ""}${r.pinError ? `. Pin failed: ${r.pinError}` : ""}`);
+    toast(`Live as Sarvam v${r.sarvamVersion} (${r.edits} passage${r.edits === 1 ? "" : "s"} changed)`);
   }, "Pushing…"),
   "go-live": el => run(el, async () => {
-    const vid = el.dataset.vid, pinEl = $("#pin-" + vid);
+    const vid = el.dataset.vid;
     let r;
-    try { r = await api("POST", `/versions/${vid}/go-live`, { sarvamVersion: $("#sv-" + vid).value || null, pin: pinEl ? pinEl.checked : false }); }
+    try { r = await api("POST", `/versions/${vid}/go-live`, { sarvamVersion: $("#sv-" + vid).value || null }); }
     catch (e) { if (e.code === "same_version") { toast(e.message); return; } throw e; }
-    await go(); toast(`Live as Sarvam v${r.sarvamVersion}${r.pinned ? ", pinned in Kollect" : ""}`);
+    await go(); toast(`Live as Sarvam v${r.sarvamVersion}`);
   }, "Checking Sarvam…"),
   "cmp-area": el => { const s = new Set(R.cmpAreas || CMP_AREAS.map(x => x.id)); s.has(el.dataset.id) ? s.delete(el.dataset.id) : s.add(el.dataset.id); R.cmpAreas = CMP_AREAS.map(x => x.id).filter(x => s.has(x)); render(); },
   "cmp-all": () => { R.cmpAreas = CMP_AREAS.map(x => x.id); render(); },

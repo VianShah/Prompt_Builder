@@ -19,12 +19,6 @@ module.exports = {
   // require a second person (the author then can't approve their own version or module).
   selfApprove: process.env.SELF_APPROVE !== 'false',
   users: parseUsers(process.env.BUILDER_USERS),
-  // The existing Kollect dashboard on Render, e.g. https://kollect-xyz.onrender.com
-  kollect: {
-    baseUrl: (process.env.KOLLECT_BASE_URL || '').replace(/\/+$/, ''),
-    // Sent as X-Builder-Key if Kollect is later protected. Kollect's endpoints are open today.
-    apiKey: process.env.KOLLECT_API_KEY || '',
-  },
   // Claude Sonnet 5.5 on the team's AWS Bedrock (ap-south-1), via a Bedrock API key. Requests are
   // served from AWS regions worldwide (global profile): don't send data that must stay in India.
   claude: {
@@ -32,7 +26,7 @@ module.exports = {
     region: process.env.BEDROCK_REGION || 'ap-south-1',
     model: process.env.CLAUDE_MODEL || 'global.anthropic.claude-sonnet-5-5',
   },
-  // Fallbacks, with the same env names as Kollect-StateMachine: GLM 5 on Bedrock, then Gemini.
+  // Fallbacks, with the GLM 5 on Bedrock, then Gemini.
   glm: {
     apiKey: process.env.GLM_BEDROCK_API_KEY || '',
     baseUrl: process.env.GLM_BEDROCK_BASE_URL || 'https://bedrock-runtime.ap-south-1.amazonaws.com/openai/v1',
@@ -45,7 +39,7 @@ module.exports = {
   llmOrder: list(process.env.LLM_ORDER, 'claude,glm,gemini'),
   // How an approved prompt reaches Sarvam. "manual" = copy into Sarvam Canvas, commit, then confirm here.
   sarvamPush: process.env.SARVAM_PROMPT_PUSH || 'manual',
-  // Reading live instructions from Sarvam (same org/workspace ids as Kollect). The login token is pasted in the UI.
+  // Reading live instructions from Sarvam (org and workspace ids from the Sarvam URL). The login token is pasted in the UI.
   // apiKey: the Voice Agents API key. Used for calls, transcripts and recordings (see lib/sarvamRest.js); it can't read prompts.
   // Module library in the GitHub repo. A fine-grained token with Contents: read and write on this repo.
   github: {
