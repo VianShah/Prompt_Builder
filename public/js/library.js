@@ -109,14 +109,16 @@ function npClient(np, lib) {
    <div class="step-foot"><span></span><button class="btn primary" data-act="np-step" data-i="1" ${lib ? "" : "disabled"}>Next: Source →</button></div></div>`;
 }
 function npSource(np, lib) {
-  const agents = (lib.agents || []).filter(a => a.hasPrompt), s = np.source;
+  // Templates (any type) first, then the live agents of this type.
+  const tpl = (R.agents || []).filter(a => a.template && a.promptId);
+  const agents = [...tpl.map(a => ({ id: a.id, name: a.name, client: a.client || "", template: true })), ...(lib.agents || []).filter(a => a.hasPrompt && !tpl.some(t => t.id === a.id))], s = np.source;
   return `<div class="stack">
    <div><h2>Source</h2><p class="muted">Start from an agent that's already live, or from a clean slate with the standard ${npTypeT(np.info.type).toLowerCase()} structure. Either way you fill and refine every section in Review.</p></div>
    <div class="choice">
-    <button type="button" class="opt" data-act="np-src" data-k="agent" aria-pressed="${s.kind === "agent"}"><b>A live agent</b><span>Its greeting and rules fill the sections. ${agents.length} ${npTypeT(np.info.type).toLowerCase()} agent${agents.length === 1 ? "" : "s"} available.</span></button>
+    <button type="button" class="opt" data-act="np-src" data-k="agent" aria-pressed="${s.kind === "agent"}"><b>A template or live agent</b><span>Its greeting and rules fill the sections. ${tpl.length ? `${tpl.length} template${tpl.length === 1 ? "" : "s"} and ` : ""}${agents.length - tpl.length} ${npTypeT(np.info.type).toLowerCase()} agent${agents.length - tpl.length === 1 ? "" : "s"}.</span></button>
     <button type="button" class="opt" data-act="np-src" data-k="blank" aria-pressed="${s.kind === "blank"}"><b>Clean slate</b><span>Greeting and the ${lib.skeleton.sections.length} standard sections, empty. Fill them from the library.</span></button>
    </div>
-   ${s.kind === "agent" ? (agents.length ? `<label class="f">Agent<select data-np="source.agentId" id="np-src-agent"><option value="">Choose…</option>${agents.map(a => `<option value="${esc(a.id)}" ${s.agentId === a.id ? "selected" : ""}>${esc(a.name)}${a.client ? ` · ${esc(a.client)}` : ""}</option>`).join("")}</select></label>` : `<div class="small muted">No ${npTypeT(np.info.type).toLowerCase()} agent has a prompt in the builder yet.</div>`) : ""}
+   ${s.kind === "agent" ? (agents.length ? `<label class="f">Agent<select data-np="source.agentId" id="np-src-agent"><option value="">Choose…</option>${agents.filter(a => a.template).length ? `<optgroup label="Templates">${agents.filter(a => a.template).map(a => `<option value="${esc(a.id)}" ${s.agentId === a.id ? "selected" : ""}>${esc(a.name)}${a.client ? ` · ${esc(a.client)}` : ""}</option>`).join("")}</optgroup>` : ""}<optgroup label="${npTypeT(np.info.type)} agents">${agents.filter(a => !a.template).map(a => `<option value="${esc(a.id)}" ${s.agentId === a.id ? "selected" : ""}>${esc(a.name)}${a.client ? ` · ${esc(a.client)}` : ""}</option>`).join("")}</optgroup></select></label>` : `<div class="small muted">No ${npTypeT(np.info.type).toLowerCase()} agent has a prompt in the builder yet.</div>`) : ""}
    <div class="small muted">The structure: <b>Greeting</b> · ${lib.skeleton.sections.map(x => `${esc(x.title)}${x.mandatory ? "" : " <span class='muted'>(optional)</span>"}`).join(" · ")}</div>
    ${Object.values(np.secs).flat().length ? `<div class="small" style="color:var(--warn)">Continuing replaces the ${Object.values(np.secs).flat().length} rules already in Review.</div>` : ""}
    <div class="step-foot"><button class="btn ghost" data-act="np-step" data-i="0">← Back</button><button class="btn primary" data-act="np-go-review" ${s.kind === "agent" && !s.agentId ? "disabled" : ""}>Next: Review →</button></div></div>`;

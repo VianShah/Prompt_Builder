@@ -560,6 +560,32 @@ r.post('/agents/clone', h(async (req, res) => {
   res.json({ agentId: appId, name: nm, pulled: !!pulled });
 }));
 
+// New agent for a prompt built in the builder: Sarvam creates it, copied from a chosen agent (voice,
+// languages, tools; its prompt is replaced when you push) or fresh. It gets the prompt's type and the
+// prompt is linked to it. Its copied prompt is NOT brought in: the push replaces it with this prompt.
+r.post('/prompts/:id/create-agent', h(async (req, res) => {
+  if (!can(req.user, 'approve')) throw fail(403, 'Only approvers and admins can create agents in Sarvam.');
+  const p = await db.get('prompts', req.params.id);
+  if (!p) throw fail(404, 'Prompt not found.');
+  if (p.agentId) throw fail(409, 'This prompt is already linked to an agent.');
+  const { name, from } = req.body || {};
+  const nm = String(name || '').trim();
+  if (nm.length < 3) throw fail(400, 'Give the new agent a name.');
+  if ((await db.list('agents')).some(x => x.name.toLowerCase() === nm.toLowerCase())) throw fail(409, 'An agent with that name already exists.');
+  const src = from ? await loadAgent(String(from)) : null;
+  const args = src ? { clone_from: src.sarvamAppId, name: nm.slice(0, 80) } : { name: nm.slice(0, 80) };
+  const out = await sarvam.callTool('configure_agent', args);
+  if (out && out.ok === false) throw fail(409, `Sarvam refused to create the agent: ${(out.error && (out.error.detail || out.error.message)) || 'unknown error'}`);
+  const appId = out && (out.id || (out.details && (out.details.app_id || out.details.id)) || out.app_id || out.agent_id);
+  if (!appId) throw fail(502, "Sarvam created the agent but didn't say its id. Check Sarvam, then Refresh.");
+  if (!(await sarvam.committedVersions(appId)).length) { try { await sarvam.commit(appId, `Created in the Prompt Builder for ${p.name} by ${req.user.email}`); } catch (_) { /* a fresh, empty agent: the push commits it */ } }
+  const agent = await db.put('agents', { id: appId, sarvamAppId: appId, name: nm, client: String((p.info && p.info.client) || (src && src.client) || '').trim(), agentType: p.agentType || (src && src.agentType) || 'collections',
+    source: 'builder', clonedFrom: src ? { id: src.id, name: src.name, version: null } : null, catalogVersion: 1, talkSeconds: 0, callsPlaced: 0, callsAnswered: 0, createdAt: now() });
+  await db.put('prompts', { ...p, agentId: appId });
+  await audit(req.user, 'agent.create_for_prompt', { prompt: p.id, agent: appId, from: src ? src.id : null });
+  res.json({ agentId: appId, name: nm, from: src ? src.name : null });
+}));
+
 // Link a UAT (test) agent: approved changes go there first, then are promoted to this agent.
 r.patch('/agents/:id', h(async (req, res) => {
   if (!can(req.user, 'approve')) throw fail(403, 'Only approvers and admins can change this.');
