@@ -65,6 +65,8 @@ r.patch('/prompts/:id', h(async (req, res) => {
   if (name) p.name = String(name).slice(0, 120);
   if (agentId !== undefined) p.agentId = agentId || null;
   await db.put('prompts', p);
+  // A prompt built for a type (e.g. sales) makes its agent that type, so the agent joins that library.
+  if (p.agentId && p.agentType) { const a = await db.get('agents', p.agentId); if (a && a.agentType !== p.agentType) await db.put('agents', { ...a, agentType: p.agentType }); }
   res.json({ ok: true });
 }));
 

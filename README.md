@@ -62,7 +62,9 @@ Each agent type (**Collections**, **Sales**) has its own library, on the **Libra
 1. **Structure:** the Greeting plus the sections every prompt of that type has, marked required or optional. *Derive from agents* reads the live agents' prompts and proposes it; *Draft from documents* does the same from client documents (for a type with no live agents yet). An approver confirms it. It's saved as `library/skeletons/<type>.json`.
 2. **Rules:** *Build from agents* reads every live agent of the type, splits each prompt into rules by section, merges near-duplicates across agents (keeping the other wordings), and saves them as draft entries that record which agents use them. *Add from documents* drafts rules from client documents. Engineers approve entries on their module page. Collections also lists the builder's built-in blocks in each section.
 
-Set each agent's type under **Agents and their type** on the Library page.
+Set each agent's type under **Agents and their type** on the Library page. Linking a New prompt to a Sarvam agent gives that agent the prompt's type.
+
+**A type with no library yet** (e.g. the first sales agents) isn't blocked: New prompt uses the standard structure for that type, and Review offers **Draft the sections with AI** (from the client details and any documents added), marking missing details `[CONFIRM: …]`. Once those agents are live, *Derive from agents* and *Build from agents* turn them into the library.
 
 **New prompt** has three steps:
 1. **Client:** type, client, agent name, product, objective.
