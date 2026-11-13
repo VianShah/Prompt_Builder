@@ -507,3 +507,4 @@ details.fb-more > .stack{margin-top:12px}
 .login form{padding:28px;gap:14px;border-radius:14px;box-shadow:var(--shadow-lg)}
 .login .brand{padding:0 0 4px}
 @media (prefers-reduced-motion:no-preference){.nav a,.arow,.toc a,.subtabs button{transition:background .12s,color .12s}}
+.nowrap{white-space:nowrap}

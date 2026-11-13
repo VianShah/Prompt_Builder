@@ -55,7 +55,8 @@ function validate(c) {
   if (missingReq.length) add("err", `${missingReq.length} required variable${missingReq.length > 1 ? "s" : ""} not mapped`, missingReq.map(s => s.k).join(", "), 5);
   const all = Object.values(sectionsFrom(c)).join("\n");
   const used = [...new Set((all.match(/\{([a-z_]+)\}/g) || []).map(x => x.slice(1, -1)))];
-  const unmapped = used.filter(k => !c.mapping[k]);
+  const extra = new Set((c.extraVars || []).map(x => x && x.k).filter(Boolean));
+  const unmapped = used.filter(k => !c.mapping[k] && !extra.has(k));
   if (unmapped.length) add("err", "Prompt uses variables with no column", unmapped.map(k => "{" + k + "}").join(", ") + " appear in blocks but aren't mapped.", 5);
   if (c.policy.dateModel === "monthend" && !c.mapping.month_end_date) add("warn", "Month-end date model without {month_end_date}", "Map the column or switch to rolling windows.", 5);
   if (c.policy.spokenOverdue && !c.mapping.total_overdue) add("err", "Overdue is spoken but not mapped", "Map {total_overdue} or turn off speaking it.", 5);

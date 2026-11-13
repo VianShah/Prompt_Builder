@@ -173,6 +173,42 @@ ${String(notes).slice(0, 20000)}`;
     faqs: (d.faqs || []).filter(x => x && x.q && x.a).map(x => ({ q: String(x.q), a: String(x.a) })), oos: d.oos ? String(d.oos) : '', provider: r.provider };
 }
 
+// Knowledge base from documents (product sheets, policy PDFs, FAQ files...). The browser extracts the
+// text and sends it in batches; each batch comes back as facts and FAQs that name the file they came
+// from, for a person to review before anything is added. Only what the documents say is used.
+const KB_KINDS = ['product', 'policy', 'process', 'contact', 'other'];
+async function kbFromDocs({ docs, client, product, agentType }) {
+  const list = (Array.isArray(docs) ? docs : []).filter(d => d && String(d.text || '').trim()).slice(0, 20);
+  const body = list.map(d => `=== FILE: ${String(d.name || 'document').slice(0, 160)} ===\n${String(d.text).slice(0, 40000)}`).join('\n\n');
+  const req = `You build the knowledge base for a phone voice agent (${agentType || 'collections'}) for ${client || 'a lender'}${product ? `, product: ${product}` : ''}. The agent may state ONLY facts in this knowledge base, so it must be exact.
+
+Read the documents below and extract:
+- facts: short, self-contained statements the agent may say. "k" is a 2–5 word topic, "v" is the fact in one or two plain sentences. "kind" is one of ${KB_KINDS.join(', ')}: product (features, fees, limits, eligibility), policy (rules the lender has set: waivers, settlements, charges, what may or may not be offered), process (how to pay, how to raise a request, timelines), contact (channels, numbers, hours).
+- faqs: questions a customer would really ask on a call, in their words, with the agent's answer in one or two sentences.
+- oos: one line the agent says when a question isn't covered (only if the documents suggest one; else empty).
+
+Rules:
+- Use only what the documents state. Never add, infer or generalise. If documents disagree, keep both facts and say so in "v".
+- Keep fees, limits, dates and percentages exactly as written. Never write amounts that belong to one customer's account.
+- Answers say what the agent says or does. Never promise an outcome the documents don't guarantee (no "will be waived/approved").
+- "src" is the FILE name each item came from, exactly as given.
+- Skip boilerplate, headers, legal footers, and anything about internal staff only.
+- English, even if the documents mix languages.
+
+Reply with only JSON: {"facts":[{"k":"","v":"","kind":"","src":""}],"faqs":[{"q":"","a":"","src":""}],"oos":""}
+
+DOCUMENTS:
+${body}`;
+  const r = await llm.json(req, { maxTokens: 12000, timeoutMs: 240000 });
+  const d = r.data || {}, names = list.map(x => String(x.name || ''));
+  const srcOf = v => { const t = String(v || ''); return names.find(n => n === t) || names.find(n => t && (n.includes(t) || t.includes(n))) || (names.length === 1 ? names[0] : t); };
+  return {
+    facts: (d.facts || []).filter(x => x && x.k && x.v).map(x => ({ k: String(x.k).slice(0, 120), v: String(x.v).slice(0, 800), kind: KB_KINDS.includes(x.kind) ? x.kind : 'other', src: srcOf(x.src) })).slice(0, 120),
+    faqs: (d.faqs || []).filter(x => x && x.q && x.a).map(x => ({ q: String(x.q).slice(0, 300), a: String(x.a).slice(0, 800), src: srcOf(x.src) })).slice(0, 120),
+    oos: d.oos ? String(d.oos).slice(0, 300) : '', provider: r.provider,
+  };
+}
+
 // Import an existing Sarvam prompt without rewording it: split into chunks, let the LLM (or keyword rules) assign each
 // chunk to one of the 13 sections, then rebuild each section from the original text in its original order.
 async function importPrompt(rawText, sourceLabel) {
@@ -644,4 +680,4 @@ At most 10 differences, most important first.`;
     differences: (Array.isArray(d.differences) ? d.differences : []).filter(x => x && x.area).slice(0, 10).map(x => ({ area: String(x.area), a: String(x.a || ''), b: String(x.b || ''), risk: ['high', 'medium', 'low'].includes(x.risk) ? x.risk : 'low' })) };
 }
 
-module.exports = { SKELETON, factoryMap, factoryAssemble, factoryReview, factoryRevise, diagnoseGroup, buildTests, runTest, optimizePrompt, applyEdits, analyzeTranscript, critiqueFix, mapFeedback, draftFix, review, kbDraft, importPrompt, diagnoseCall, compareSummary };
+module.exports = { kbFromDocs, SKELETON, factoryMap, factoryAssemble, factoryReview, factoryRevise, diagnoseGroup, buildTests, runTest, optimizePrompt, applyEdits, analyzeTranscript, critiqueFix, mapFeedback, draftFix, review, kbDraft, importPrompt, diagnoseCall, compareSummary };

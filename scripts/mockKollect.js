@@ -45,6 +45,10 @@ app.post('/openai/v1/chat/completions', (req, res) => {
   } else if (p.includes('Rewrite one section')) {
     const cur = p.split('CURRENT SECTION TEXT:\n')[1].split('\n\nReply with only JSON')[0];
     out = { revised: cur + '\n- Never ask the customer how much they can pay.', summary: 'Added an explicit ban on asking how much.' };
+  } else if (p.includes('You build the knowledge base for a phone voice agent')) {
+    const files = [...p.matchAll(/=== FILE: (.+?) ===/g)].map(m => m[1]);
+    out = { facts: files.flatMap((f, i) => [{ k: `Late fee ${i + 1}`, v: `A late fee applies as written in ${f}.`, kind: i % 2 ? 'policy' : 'product', src: f }, { k: 'Payment channels', v: 'UPI, net banking or the app.', kind: 'contact', src: f }]),
+      faqs: files.map(f => ({ q: 'Can I pay by UPI?', a: 'Yes, through the payment link.', src: f })), oos: "I don't have that information; I'll note it for the team." };
   } else if (p.includes('Review this collections')) out = [];
   else out = { facts: [], faqs: [], oos: '' };
   res.json({ choices: [{ message: { content: JSON.stringify(out) } }] });
