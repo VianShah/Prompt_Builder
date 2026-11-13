@@ -49,6 +49,12 @@ Set `SARVAM_API_KEY` (Sarvam > Voice Agents > Settings > API key) on Render. The
 
 After signing in, **Load all prompts** on the Agents page copies every agent's committed prompt in the background, with a progress bar. It stops cleanly if the login lapses.
 
+### Screens
+
+- **Agents:** one list with search; unlinked new prompts are listed too. **+ New agent** opens New prompt; Refresh, Load all prompts and Compare are under ⋯.
+- **Agent page:** tabs **Calls**, **Prompt**, **Changes**. Settings, History and rollback, and the agent actions are under ⋯.
+- **Library:** structure and rules per agent type (below). **Approvals:** review and push.
+
 ### Library and New prompt
 
 Each agent type (**Collections**, **Sales**) has its own library, on the **Library** page:
