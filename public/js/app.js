@@ -208,6 +208,7 @@ async function loadCur(id) {
   R.sv = null;
   // Linked agents, and prompts built with New prompt (they carry their own Greeting + Instructions text).
   if ((p.agent && p.agent.sarvamAppId) || latestOf(p).sarvamText) { try { R.sv = await api("GET", `/versions/${latestOf(p).id}/sarvam-text`); } catch (e) { R.sv = null; } }
+  bkSnapshot(p, R.sv); // a copy in this browser, in case the server loses it
 }
 const latestOf = cur => cur.versions[cur.versions.length - 1];
 const mdOf = (cfg, v, tags = true) => toMarkdown(header(cfg, v.v), v.order, v.sections, tags);
@@ -326,6 +327,7 @@ function viewAgents() {
      <a href="#compare">Compare two agents</a></div></details>
    <a class="btn primary" href="#create">+ New agent</a></div></div>
   ${sarvamPanel()}
+  ${bkBanner()}
   ${pullBar()}
   ${R.syncNote ? `<div class="notice"><span>${R.syncNote}</span><a href="#" class="small" data-act="sync-note-x">dismiss</a></div>` : ""}
   ${rows.length ? `<div class="alist">${rows.join("")}</div>` : `<div class="empty">${q ? `Nothing matches “${esc(R.agQ)}”.` : sOn ? "No agents yet. Choose ⋯ → Refresh from Sarvam." : "No agents yet. Connect Sarvam first."}</div>`}`;
@@ -705,7 +707,7 @@ function nextStep(cur) {
   const v = `v${esc(latest.v)}`;
   const bar = (msg, btns) => `<div class="nextstep"><span style="flex:1;min-width:200px">${msg}</span>${btns}</div>`;
   const see = `<button class="btn sm" data-act="see-diff" data-pid="${cur.prompt.id}" data-vid="${latest.id}">See changes</button>`;
-  const edit = canDo("edit") && !R.editText ? `<button class="btn sm" data-act="edit-text">✎ Edit</button>` : "";
+  const edit = canDo("edit") && !R.editText ? `<button class="btn sm" data-act="edit-text">✎ Edit${bkEditLoad(cur.prompt.id) ? " (unsaved changes)" : ""}</button>` : "";
   const fin = canDo("edit") && !R.editText ? `<button class="btn sm" data-act="fin-open" data-pid="${cur.prompt.id}">Finalize</button>` : "";
   // UAT: try the version on the linked test agent first, then promote it to this agent.
   const uatAgent = cur.agent && cur.agent.uatAgentId ? (R.agents || []).find(a => a.id === cur.agent.uatAgentId) : null;
@@ -809,6 +811,7 @@ function promptTab(cur) {
        <a href="#" data-act="view-mode" data-m="raw">${R.viewRaw && !R.viewSections ? "✓ " : ""}Plain text</a>
        <a href="#" data-act="view-mode" data-m="sections">${R.viewSections ? "✓ " : ""}By builder section</a>
        <hr class="sep">
+       <a href="#" data-act="bk-download" title="The greeting and instructions as a .md file, which Restore on the Agents page takes back">Download .md backup</a>
        ${canDo("edit") && aiOn() && !(R.opt && R.opt.promptId === p.id) ? `<a href="#" data-act="opt-open" title="Find repeated rules, contradictions and wordy passages">Optimize…</a>` : ""}
        <a href="#" data-act="copy-prompt">Copy</a><a href="#" data-act="dl-prompt">Download</a>
      </div></details></div></div>
@@ -858,6 +861,8 @@ function startEdit() {
   const cur = R.cur; if (!cur) return;
   const text = R.sv && R.sv.text ? R.sv.text : mdOf(cur.prompt.cfg, latestOf(cur), false);
   R.editText = { text, orig: text, greeting: greetingNow(), og: greetingNow() };
+  const kept = bkEditLoad(cur.prompt.id); // typed before a refresh or a lost connection, never saved
+  if (kept && (kept.text !== text || kept.greeting !== R.editText.greeting)) { R.editText.text = kept.text; R.editText.greeting = kept.greeting; R.editText.finalNotes = kept.finalNotes; toast(`Brought back your unsaved edit from ${new Date(kept.at).toLocaleString("en-IN")}. Cancel discards it.`); }
   R.tab = "prompt"; R.viewSections = false; render(); window.scrollTo(0, 0);
 }
 // "Added the fix to draft v3.1 · 117,221 → 117,913 characters (+692)". Toasts are plain text.
@@ -1934,17 +1939,17 @@ const ACT = {
     const cur = R.cur, F = R.fin; if (!cur || !F) return;
     const text = R.sv && R.sv.text ? R.sv.text : mdOf(cur.prompt.cfg, latestOf(cur), false), greeting = greetingNow();
     const r = await api("POST", `/prompts/${F.pid}/finalize`, { text, greeting, kb: F.kb });
-    R.editText = { text: r.text, orig: text, greeting, og: greeting, finalNotes: r.changes || [] };
+    R.editText = { text: r.text, orig: text, greeting, og: greeting, finalNotes: r.changes || [] }; bkEditSave(F.pid, { ...R.editText, finalNotes: undefined });
     R.fin = null; R.kbImp = null; render(); window.scrollTo(0, 0);
     toast("Recompiled. Check it, then save it as a new draft.");
   }, "Recompiling (about a minute)…"),
   "open-edit": el => { R.curId = el.dataset.id; R.agentId = null; R.tab = "prompt"; R.pendingEdit = true; },
-  "cancel-text": () => { const e = R.editText; if (e && (e.text !== e.orig || e.greeting !== e.og) && !confirm("Discard your edits?")) return; R.editText = null; render(); },
+  "cancel-text": () => { const e = R.editText; if (e && (e.text !== e.orig || e.greeting !== e.og) && !confirm("Discard your edits?")) return; R.editText = null; bkEditClear(R.curId); render(); },
   "save-text": el => run(el, async () => {
     const body = { text: $("#ed-text").value, note: $("#ed-note").value };
     if ($("#ed-greeting")) body.greeting = $("#ed-greeting").value;
     const r = await api("POST", `/prompts/${R.curId}/edit`, body);
-    R.editText = null; await reloadCur(); window.scrollTo(0, 0); toast(savedMsg(r, "your edit"));
+    const pid = R.curId; R.editText = null; bkEditClear(pid); await reloadCur(); window.scrollTo(0, 0); toast(savedMsg(r, "your edit")); bkAfterSave(pid);
   }, "Saving…"),
   "push-target": el => pushTargetModal(el.dataset.pid, el.dataset.vid),
   "push-target-go": el => run(el, async () => {
@@ -2053,8 +2058,8 @@ document.addEventListener("input", e => {
   if (el.dataset.modparam && R.modUse) { R.modUse.params[el.dataset.modparam] = el.value; R.modUse.preview = null; }
   if (el.dataset.gd) { R.gd = R.gd || {}; R.gd[el.dataset.gd] = el.value; } // notes survive a redraw while typing
   if (el.dataset.cfg && R.acfg && R.acfg.edit && el.type !== "checkbox" && el.tagName !== "SELECT") setPath(R.acfg.edit, el.dataset.cfg, el.value);
-  if (R.editText && el.id === "ed-text") { R.editText.text = el.value; const c = $("#ed-count"); if (c) c.innerHTML = edCount(R.editText); }
-  if (R.editText && el.id === "ed-greeting") R.editText.greeting = el.value;
+  if (R.editText && el.id === "ed-text") { R.editText.text = el.value; const c = $("#ed-count"); if (c) c.innerHTML = edCount(R.editText); bkEditSave(R.curId, R.editText); }
+  if (R.editText && el.id === "ed-greeting") { R.editText.greeting = el.value; bkEditSave(R.curId, R.editText); }
 });
 document.addEventListener("change", e => {
   const el = e.target;

@@ -382,6 +382,7 @@ Object.assign(ACT, {
     const r = await api("POST", `/library/${np.info.type}/compose`, { name: np.name, info: np.info, greeting: np.greeting, sourceAgentId: np.sourceAgent ? np.sourceAgent.id : null, issues, questions,
       sections: sk.sections.map(s => ({ id: s.id, title: s.title, rules: npRules(np, s.id).map(x => ({ text: x.text, ref: x.ref || null })) })) });
     L.np = null; R.npReview = null; R.npBestNote = null; saveLocal(); await loadPrompts(true);
+    bkAfterSave(r.promptId); // browser copy + the .md download
     R.curId = r.promptId; R.agentId = null; R.tab = "prompt"; location.hash = "#improve";
     const open = r.openIssues + r.openQuestions;
     toast(open ? `Saved as a draft with ${open} open item${open === 1 ? "" : "s"}, listed on its page.` : "Saved as a draft. Send it for approval, then push it to a Sarvam agent.");

@@ -2,6 +2,7 @@ const express = require('express');
 const db = require('../db');
 const pushLib = require('../lib/sarvamPush');
 const core = require('../../shared/promptcore');
+const PB = require('../../shared/blocks');
 const { can } = require('../auth');
 const config = require('../config');
 const ai = require('../lib/aiTasks');
@@ -90,6 +91,43 @@ r.get('/versions/:vid/sarvam-text', h(async (req, res) => {
   const meta = (v.sarvamMeta || (live && live.sarvamMeta)) || null;
   res.json({ text: t ? t.text : null, exact: t ? t.exact : false, edits: t ? t.edits || 0 : 0, liveSarvamVersion: live ? live.sarvamVersion : null, meta,
     greeting: v.greeting || (meta && meta.greeting) || '', greetingChanged: !!(v.greeting && meta && v.greeting.trim() !== (meta.greeting || '').trim()) });
+}));
+
+// Restore a prompt from a backup (this browser's copy, or a downloaded .md file) when the server lost it,
+// for example after a Render restart wiped its file store. It comes back as a draft, to be approved again.
+r.post('/prompts/restore', h(async (req, res) => {
+  if (!can(req.user, 'edit')) throw fail(403, 'Your role cannot restore prompts.');
+  const b = req.body || {};
+  const text = String(b.text || '').split(String.fromCharCode(13)).join('').trim();
+  if (text.length < 20) throw fail(400, 'The backup has no prompt text.');
+  if (text.length > 400000) throw fail(413, 'The backup is too large.');
+  const id = b.id && /^[A-Za-z0-9_-]{6,64}$/.test(String(b.id)) ? String(b.id) : null;
+  if (id && await db.get('prompts', id)) throw fail(409, 'This prompt is already on the server.');
+  const agentType = b.agentType === 'sales' ? 'sales' : 'collections';
+  // Keep the agent link only if no other prompt has taken that agent since.
+  let agentId = b.agentId ? String(b.agentId) : null;
+  if (agentId && ((await db.list('prompts', x => x.agentId === agentId)).length || !(await db.get('agents', agentId)))) agentId = null;
+  // Split at "## " headings, as New prompt saves them, so feedback can still find its section.
+  const secs = []; let cur = null;
+  const slug = t => String(t).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'section';
+  for (const line of text.split('\n')) {
+    const m = line.match(/^##\s+(.+?)\s*#*$/);
+    if (m) { cur = { title: m[1].trim(), lines: [] }; secs.push(cur); continue; }
+    if (!cur) { cur = { title: 'Instructions', lines: [] }; secs.push(cur); }
+    cur.lines.push(line);
+  }
+  const used = new Set(), sections = {}, titles = {}, order = [];
+  for (const sct of secs) { let k = slug(sct.title); for (let n = 2; used.has(k); n++) k = `${slug(sct.title)}-${n}`; used.add(k); sections[k] = sct.lines.join('\n').trim(); titles[k] = sct.title; order.push(k); }
+  const info = b.info && typeof b.info === 'object' ? b.info : {};
+  const cfg = PB.baseCfg(); Object.assign(cfg.client, { name: String(info.client || ''), agentName: String(info.agentName || '') });
+  const prompt = await db.put('prompts', { id: id || uid(), name: String(b.name || 'Restored prompt').slice(0, 120), agentId, agentType, cfg, info, createdBy: req.user.email, restoredAt: now() });
+  const v = /^\d+(\.\d+)?$/.test(String(b.v || '')) ? String(b.v) : '1.0';
+  const ver = await db.put('versions', { id: uid(), promptId: prompt.id, v, status: 'draft', by: req.user.email, rev: 0, sections, order, titles, sarvamText: text,
+    greeting: String(b.greeting || '').trim().slice(0, 4000), note: `Restored from a backup${b.savedAt ? ` saved ${String(b.savedAt).slice(0, 19).replace('T', ' ')}` : ''}`, src: 'Restore',
+    skeletonSections: order, history: [{ at: now(), by: req.user.email, action: 'restored', note: b.status && b.status !== 'draft' ? `Was ${String(b.status).slice(0, 20)} before the server lost it` : 'Restored' }] });
+  await db.put('prompts', { ...prompt, latestVersionId: ver.id });
+  await audit(req.user, 'prompt.restore', { prompt: prompt.id, v, linked: !!agentId });
+  res.json({ promptId: prompt.id, versionId: ver.id, v, linked: !!agentId });
 }));
 
 // Finalize: recompile the whole prompt with the approved knowledge base and its lookup section.
