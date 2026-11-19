@@ -260,7 +260,11 @@ const npFind = (np, id) => { for (const [sec, list] of Object.entries(np.secs)) 
 Object.assign(ACT, {
   "np-step": el => { const np = npState(); np.step = +el.dataset.i; R.npLib = null; commit(); window.scrollTo(0, 0); },
   "np-reset": () => { if (!confirm("Start a new prompt from scratch? This clears the one in progress.")) return; L.np = null; R.npReview = null; R.npBestNote = null; commit(); },
-  "np-set": el => { const np = npState(), k = el.dataset.k; np.info[k] = el.dataset.v; commit(); if (k === "type") loadLibType(el.dataset.v).then(render).catch(e => toast(e.message)); },
+  "np-set": el => { const np = npState(), k = el.dataset.k, v = el.dataset.v;
+    if (k === "type") { // load that type's structure first, and drop details that only belong to the other type
+      loadLibType(v).then(() => { np.info.type = v; np.source = { kind: "blank", agentId: "" }; np.secs = {}; np.sourceAgent = null;
+        if (v === "sales") { np.info.bucket = ""; np.info.callingAs = ""; } else { np.info.bucket = np.info.bucket || "b1"; np.info.callingAs = np.info.callingAs || "lender"; } commit(); }).catch(e => toast(e.message)); return; }
+    np.info[k] = v; commit(); },
   "np-lang": el => { const i = npState().info, l = el.dataset.l; i.languages = i.languages.includes(l) ? i.languages.filter(x => x !== l) : [...i.languages, l]; commit(); },
   "np-src": el => { npState().source.kind = el.dataset.k; commit(); },
   "np-go-review": el => run(el, async () => {

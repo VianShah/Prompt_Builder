@@ -226,7 +226,7 @@ r.post('/library/:type/draft', h(async (req, res) => {
   if (!can(req.user, 'edit')) throw fail(403, 'Your role cannot do this.');
   const type = typeOf(req), sk = await skeletonFor(type);
   const { info, docs } = req.body || {};
-  const brief = { name: 'Client details (from New prompt)', text: Object.entries(info || {}).filter(([, v]) => v && (!Array.isArray(v) || v.length)).map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(', ') : v}`).join('\n') };
+  const brief = { name: 'Client details (from New prompt)', text: Object.entries(info || {}).filter(([k, v]) => v && (!Array.isArray(v) || v.length) && !(type === 'sales' && ['bucket', 'callingAs', 'agency'].includes(k))).map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(', ') : v}`).join('\n') };
   const out = await lt.libraryFromDocs({ agentType: type, docs: [brief, ...(Array.isArray(docs) ? docs : [])], skeleton: sk, mode: 'draft' });
   res.json({ rules: out.rules, greeting: out.greeting, provider: out.provider });
 }));
