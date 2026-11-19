@@ -10,7 +10,7 @@ app.set('trust proxy', 1);
 app.use(express.json({ limit: '4mb' }));
 
 // Render health check: no auth, no secrets.
-app.get('/healthz', async (req, res) => { const d = await db.ping(); res.status(d.ok ? 200 : 503).json({ ok: d.ok }); });
+app.get('/healthz', async (req, res) => { const d = await db.ping(); res.status(d.ok ? 200 : 503).json({ ok: d.ok, storage: d.kind }); }); // storage: postgres, or file (wiped on every Render deploy)
 
 app.post('/api/login', auth.login);
 app.post('/api/logout', auth.logout);
