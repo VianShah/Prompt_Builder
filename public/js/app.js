@@ -583,7 +583,10 @@ function kbBatches(I) {
   return batches;
 }
 async function kbBuild() {
-  const I = kbImp(), kb = L.cfg.kb;
+  // In Finalize the knowledge base belongs to the prompt being finalized: its own client, product and type,
+  // and repeats are checked against what this Finalize already holds, not the builder's local config.
+  const fp = R.fin && R.cur && R.cur.prompt, fi = (fp && fp.info) || {}, fc = (fp && fp.cfg && fp.cfg.client) || {};
+  const I = kbImp(), kb = R.fin ? R.fin.kb : L.cfg.kb;
   const facts = [], faqs = []; let oos = "", errors = 0, provider = "";
   I.files.filter(f => f.status === "ready").forEach(f => { facts.push(...f.facts); faqs.push(...f.faqs); });
   const batches = kbBatches(I);
@@ -591,7 +594,7 @@ async function kbBuild() {
   I.progress = { done: 0, total: batches.length }; I.draft = null; render();
   const queue = [...batches];
   await Promise.all([0, 1].map(async () => { for (let b; (b = queue.shift());) {
-    try { const r = await api("POST", "/ai/kb-docs", { docs: b.map(p => ({ name: p.name, text: p.text })), client: (L.np && L.np.info.client) || L.cfg.client.name, product: (L.np && L.np.info.product) || L.cfg.client.product, agentType: (L.np && L.np.info.type) || L.cfg.objective });
+    try { const r = await api("POST", "/ai/kb-docs", { docs: b.map(p => ({ name: p.name, text: p.text })), client: fp ? (fi.client || fc.name || "") : (L.np && L.np.info.client) || L.cfg.client.name, product: fp ? (fi.product || fc.product || "") : (L.np && L.np.info.product) || L.cfg.client.product, agentType: fp ? (fp.agentType || "collections") : (L.np && L.np.info.type) || L.cfg.objective });
       facts.push(...r.facts); faqs.push(...r.faqs); if (r.oos && !oos) oos = r.oos; provider = r.provider || provider; }
     catch (e) { errors++; }
     I.progress.done++; render();
@@ -715,9 +718,9 @@ function nextStep(cur) {
     + (testsChip(latest) ? ` ${testsChip(latest)}` : "");
   if (latest.status === "draft") return bar(`<b>${v} has your changes</b> and isn't live yet.${settings} ${uatAgent ? "Try it on UAT, then send it for approval." : "Send it for approval when it's ready."}${onUat}`, see + edit + fin + uatBtn + (canDo("edit") ? `<button class="btn sm ${uatBtn && !latest.uat ? "" : "primary"}" data-act="submit" data-vid="${latest.id}">Send for approval</button>` : ""));
   if (latest.status === "rejected") { const n = ((latest.history || []).slice(-1)[0] || {}).note; return bar(`<b>${v} was sent back</b>${n ? `: “${esc(n)}”` : ""}. Edit it, or send it again.`, see + edit + fin + (canDo("edit") ? `<button class="btn sm" data-act="submit" data-vid="${latest.id}">Send again</button>` : "")); }
-  if (latest.status === "pending") return bar(`<b>${v} is waiting for approval.</b>${settings}${onUat}`, see + edit + uatBtn + (canDo("approve") ? `<a class="btn sm primary" href="#approvals">Review it</a>` : ""));
+  if (latest.status === "pending") return bar(`<b>${v} is waiting for approval.</b>${settings}${onUat}`, see + edit + fin + uatBtn + (canDo("approve") ? `<a class="btn sm primary" href="#approvals">Review it</a>` : ""));
   if (latest.status === "approved") return bar(uatAgent ? `<b>${v} is approved.</b>${settings} ${latest.uat ? "Listen to a few UAT calls, then promote it to the live agent." : "Push it to UAT to test it, or promote it straight to the live agent."}${onUat}` : `<b>${v} is approved.</b>${settings} Push it to Sarvam to make it live.`,
-    see + edit + uatBtn + (latest.uat && uatAgent ? `<button class="btn sm" data-act="open-agent-calls" data-id="${esc(uatAgent.id)}">UAT calls</button>` : "") + pushControl(cur, latest, !!uatAgent));
+    see + edit + fin + uatBtn + (latest.uat && uatAgent ? `<button class="btn sm" data-act="open-agent-calls" data-id="${esc(uatAgent.id)}">UAT calls</button>` : "") + pushControl(cur, latest, !!uatAgent));
   return "";
 }
 // The push button, or — for a prompt made in the builder — a picker for the Sarvam agent it goes to.

@@ -262,6 +262,9 @@ Object.assign(ACT, {
   "np-reset": () => { if (!confirm("Start a new prompt from scratch? This clears the one in progress.")) return; L.np = null; R.npReview = null; R.npBestNote = null; commit(); },
   "np-set": el => { const np = npState(), k = el.dataset.k, v = el.dataset.v;
     if (k === "type") { // load that type's structure first, and drop details that only belong to the other type
+      if (v === np.info.type) return;
+      const had = Object.values(np.secs || {}).flat().length;
+      if (had && !confirm(`Switching to ${npTypeT(v)} clears the ${had} rule${had === 1 ? "" : "s"} in Review. Continue?`)) return;
       loadLibType(v).then(() => { np.info.type = v; np.source = { kind: "blank", agentId: "" }; np.secs = {}; np.sourceAgent = null;
         if (v === "sales") { np.info.bucket = ""; np.info.callingAs = ""; } else { np.info.bucket = np.info.bucket || "b1"; np.info.callingAs = np.info.callingAs || "lender"; } commit(); }).catch(e => toast(e.message)); return; }
     np.info[k] = v; commit(); },

@@ -9,7 +9,7 @@
 //   POST /library/:type/best                the best-fitting rules for a new agent, per section
 //   POST /library/:type/refine              tailor one rule to the new agent; saved to the library as a variant
 //   POST /library/:type/refine-batch        apply every answered drafting question in one AI call
-//   POST /library/:type/compose            save the assembled prompt as a draft (then approve and push as usual)
+//   POST /library/:type/compose             save the assembled prompt as a draft (then approve and push as usual)
 const express = require('express');
 const db = require('../db');
 const PB = require('../../shared/blocks');

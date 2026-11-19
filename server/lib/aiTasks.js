@@ -795,9 +795,12 @@ At most 10 differences, most important first.`;
 
 // ---------- Finalize: recompile the whole prompt with the knowledge base and its lookup section ----------
 // Returns the recompiled text for the editor. Nothing is saved here; the engineer reviews it and saves a draft.
+const FINAL_MAX = 45000;
 const finalErr = msg => Object.assign(new Error(msg), { code: 'invalid_json', publicMessage: msg });
 async function finalizePrompt({ text, greeting, kb, client, product }) {
   const T = String(text || '');
+  // The reply must hold the whole prompt again; past this size it would be cut off mid-prompt.
+  if (T.length > FINAL_MAX) throw finalErr(`This prompt is ${T.length.toLocaleString('en-IN')} characters, more than one recompile can return whole (${FINAL_MAX.toLocaleString('en-IN')}). Use Optimize, or shorten it first.`);
   const facts = ((kb && kb.facts) || []).map(f => `- ${f.k}: ${f.v}`).join('\n');
   const faqs = ((kb && kb.faqs) || []).map(f => `Q: ${f.q}\nA: ${f.a}`).join('\n');
   const req = `You are finalising a voice-agent prompt (${K().t}, ${K().domain}) for ${client || 'the client'}${product ? `, product: ${product}` : ''}. Every section has been drafted. Recompile the WHOLE prompt into one stronger, cleaner prompt.
@@ -830,6 +833,8 @@ ${T}
   const r = await llm.json(req, { maxTokens: 16000, timeoutMs: 420000 });
   const out = String((r.data && r.data.text) || '').trim();
   if (out.length < 200) throw finalErr('The AI returned no prompt. Try Recompile again.');
+  // Removing repeats shortens a prompt, but not by more than half: that is a cut-off reply, not a recompile.
+  if (out.length < T.length * 0.5) throw finalErr(`The recompiled prompt is ${Math.round(100 * out.length / T.length)}% of the original length, so part of it was probably lost. Nothing was changed; try Recompile again.`);
   // Every variable the prompt used must still be there, or the call would lose a value.
   const vars = s => new Set((String(s).match(/\{\{\s*[A-Za-z0-9_]+\s*\}\}/g) || []).map(v => v.replace(/\s+/g, '')));
   const lost = [...vars(T)].filter(v => !vars(out).has(v));

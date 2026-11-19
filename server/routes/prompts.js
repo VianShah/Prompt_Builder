@@ -92,9 +92,6 @@ r.get('/versions/:vid/sarvam-text', h(async (req, res) => {
     greeting: v.greeting || (meta && meta.greeting) || '', greetingChanged: !!(v.greeting && meta && v.greeting.trim() !== (meta.greeting || '').trim()) });
 }));
 
-// Edit the prompt text (and greeting) by hand: saved as a new draft version on top of the latest.
-// The text is the full prompt as it reads in Sarvam; it is regrouped into sections again so feedback
-// can still be traced, but the text itself is kept exactly as typed.
 // Finalize: recompile the whole prompt with the approved knowledge base and its lookup section.
 // Nothing is saved here: the editor shows the result, and saving it creates a draft as usual.
 r.post('/prompts/:id/finalize', h(async (req, res) => {
@@ -113,6 +110,9 @@ r.post('/prompts/:id/finalize', h(async (req, res) => {
   res.json(out);
 }));
 
+// Edit the prompt text (and greeting) by hand: saved as a new draft version on top of the latest.
+// The text is the full prompt as it reads in Sarvam; it is regrouped into sections again so feedback
+// can still be traced, but the text itself is kept exactly as typed.
 r.post('/prompts/:id/edit', h(async (req, res) => {
   if (!can(req.user, 'edit')) throw fail(403, 'Your role cannot change prompts.');
   const p = await loadPrompt(req.params.id);
