@@ -95,6 +95,24 @@ r.get('/versions/:vid/sarvam-text', h(async (req, res) => {
 // Edit the prompt text (and greeting) by hand: saved as a new draft version on top of the latest.
 // The text is the full prompt as it reads in Sarvam; it is regrouped into sections again so feedback
 // can still be traced, but the text itself is kept exactly as typed.
+// Finalize: recompile the whole prompt with the approved knowledge base and its lookup section.
+// Nothing is saved here: the editor shows the result, and saving it creates a draft as usual.
+r.post('/prompts/:id/finalize', h(async (req, res) => {
+  if (!can(req.user, 'edit')) throw fail(403, 'Your role cannot change prompts.');
+  const p = await loadPrompt(req.params.id);
+  const body = req.body || {};
+  const text = String(body.text || '').split(String.fromCharCode(13)).join('');
+  if (text.trim().length < 20) throw fail(400, 'The prompt text is empty.');
+  const kb = body.kb || {};
+  const clean = { facts: (Array.isArray(kb.facts) ? kb.facts : []).slice(0, 200).map(f => ({ k: String(f.k || '').slice(0, 200), v: String(f.v || '').slice(0, 800) })),
+    faqs: (Array.isArray(kb.faqs) ? kb.faqs : []).slice(0, 200).map(f => ({ q: String(f.q || '').slice(0, 300), a: String(f.a || '').slice(0, 800) })) };
+  const info = p.info || {}, cfgClient = (p.cfg && p.cfg.client) || {};
+  const out = await ai.finalizePrompt({ text, greeting: String(body.greeting || '').slice(0, 1000), kb: clean,
+    client: info.client || cfgClient.name, product: info.product || cfgClient.product });
+  await audit(req.user, 'prompt.finalize', { prompt: p.id, kbFacts: clean.facts.length, kbFaqs: clean.faqs.length });
+  res.json(out);
+}));
+
 r.post('/prompts/:id/edit', h(async (req, res) => {
   if (!can(req.user, 'edit')) throw fail(403, 'Your role cannot change prompts.');
   const p = await loadPrompt(req.params.id);

@@ -703,6 +703,7 @@ function nextStep(cur) {
   const bar = (msg, btns) => `<div class="nextstep"><span style="flex:1;min-width:200px">${msg}</span>${btns}</div>`;
   const see = `<button class="btn sm" data-act="see-diff" data-pid="${cur.prompt.id}" data-vid="${latest.id}">See changes</button>`;
   const edit = canDo("edit") && !R.editText ? `<button class="btn sm" data-act="edit-text">✎ Edit</button>` : "";
+  const fin = canDo("edit") && !R.editText ? `<button class="btn sm" data-act="fin-open" data-pid="${cur.prompt.id}">Finalize</button>` : "";
   // UAT: try the version on the linked test agent first, then promote it to this agent.
   const uatAgent = cur.agent && cur.agent.uatAgentId ? (R.agents || []).find(a => a.id === cur.agent.uatAgentId) : null;
   const onUat = latest.uat ? ` <span class="chip ok">On UAT: ${esc(latest.uat.name)} · Sarvam v${esc(latest.uat.sarvamVersion)}</span>` : "";
@@ -712,8 +713,8 @@ function nextStep(cur) {
     + (lv && latest.chars != null && lv.chars != null ? ` <span class="small">Length ${fmtN(lv.chars)} → <b>${fmtN(latest.chars)}</b> characters (${delta(latest.chars - lv.chars)}).</span>` : "")
     + (latest.fixes && latest.fixes.length > 1 || (latest.feedbackIds || []).length > 1 ? ` <span class="small muted">${(latest.feedbackIds || []).length} fixes in this draft.</span>` : "")
     + (testsChip(latest) ? ` ${testsChip(latest)}` : "");
-  if (latest.status === "draft") return bar(`<b>${v} has your changes</b> and isn't live yet.${settings} ${uatAgent ? "Try it on UAT, then send it for approval." : "Send it for approval when it's ready."}${onUat}`, see + edit + uatBtn + (canDo("edit") ? `<button class="btn sm ${uatBtn && !latest.uat ? "" : "primary"}" data-act="submit" data-vid="${latest.id}">Send for approval</button>` : ""));
-  if (latest.status === "rejected") { const n = ((latest.history || []).slice(-1)[0] || {}).note; return bar(`<b>${v} was sent back</b>${n ? `: “${esc(n)}”` : ""}. Edit it, or send it again.`, see + edit + (canDo("edit") ? `<button class="btn sm" data-act="submit" data-vid="${latest.id}">Send again</button>` : "")); }
+  if (latest.status === "draft") return bar(`<b>${v} has your changes</b> and isn't live yet.${settings} ${uatAgent ? "Try it on UAT, then send it for approval." : "Send it for approval when it's ready."}${onUat}`, see + edit + fin + uatBtn + (canDo("edit") ? `<button class="btn sm ${uatBtn && !latest.uat ? "" : "primary"}" data-act="submit" data-vid="${latest.id}">Send for approval</button>` : ""));
+  if (latest.status === "rejected") { const n = ((latest.history || []).slice(-1)[0] || {}).note; return bar(`<b>${v} was sent back</b>${n ? `: “${esc(n)}”` : ""}. Edit it, or send it again.`, see + edit + fin + (canDo("edit") ? `<button class="btn sm" data-act="submit" data-vid="${latest.id}">Send again</button>` : "")); }
   if (latest.status === "pending") return bar(`<b>${v} is waiting for approval.</b>${settings}${onUat}`, see + edit + uatBtn + (canDo("approve") ? `<a class="btn sm primary" href="#approvals">Review it</a>` : ""));
   if (latest.status === "approved") return bar(uatAgent ? `<b>${v} is approved.</b>${settings} ${latest.uat ? "Listen to a few UAT calls, then promote it to the live agent." : "Push it to UAT to test it, or promote it straight to the live agent."}${onUat}` : `<b>${v} is approved.</b>${settings} Push it to Sarvam to make it live.`,
     see + edit + uatBtn + (latest.uat && uatAgent ? `<button class="btn sm" data-act="open-agent-calls" data-id="${esc(uatAgent.id)}">UAT calls</button>` : "") + pushControl(cur, latest, !!uatAgent));
@@ -783,6 +784,7 @@ function withToc(html) {
 const greetingNow = () => (R.sv && (R.sv.greeting || (R.sv.meta && R.sv.meta.greeting))) || "";
 function promptTab(cur) {
   const p = cur.prompt, latest = latestOf(cur);
+  if (R.fin && R.fin.pid === p.id && !R.editText) return finalizePanel(cur);
   if (R.editText) return editPanel(cur);
   const text = R.sv && R.sv.text ? R.sv.text : mdOf(p.cfg, latest, false);
   const m = R.sv && R.sv.meta, greeting = greetingNow();
@@ -819,11 +821,25 @@ function promptTab(cur) {
    </div></div>
    ${sarvamAgentPanel(cur)}</div>`;
 }
+// Finalize: add the knowledge base, then recompile the whole prompt in one AI pass. The result opens in the editor.
+function finalizePanel(cur) {
+  const F = R.fin, latest = latestOf(cur), n = F.kb.facts.length + F.kb.faqs.length;
+  return `<div class="stack">
+   <div class="nextstep"><span style="flex:1;min-width:200px"><b>Finalize v${esc(latest.v)}.</b> Add the knowledge base, then recompile the whole prompt. The result opens in the editor for you to check. Nothing is saved until you save it.</span><button class="btn sm" data-act="fin-cancel">Back</button></div>
+   <section class="stack"><div><h3>1 · Knowledge base</h3><p class="small muted">In Sarvam, attach the knowledge base in the agent's Settings. That gives the agent its knowledge base query tool. Add the same material here: the facts and FAQs are folded into the prompt, and the prompt gets a lookup section that tells the agent when and how to query the tool.</p></div>
+    ${n ? `<div class="small"><b>${n} item${n === 1 ? "" : "s"} ready</b> · ${F.kb.facts.length} facts, ${F.kb.faqs.length} FAQs · <a href="#" class="small" data-act="fin-kb-clear">Clear</a></div>` : `<div class="small muted">Nothing added yet. You can recompile without it, and the lookup section is still written.</div>`}
+    ${kbImportPanel()}
+   </section>
+   <section class="stack"><div><h3>2 · Recompile the prompt</h3><p class="small muted">One AI pass over the whole prompt. It removes repeats, contradictions, claims the knowledge base doesn't support and vague wording, keeps every variable and every line the agent speaks, and writes the knowledge base lookup section. Compliance lines are never weakened.</p></div>
+    <div class="row" style="gap:10px"><button class="btn primary ai" data-act="fin-run" ${aiOn() ? "" : "disabled title='No AI model configured'"}>Recompile prompt</button><span class="small muted">About a minute.</span></div></section>
+  </div>`;
+}
 // Manual editing: the whole greeting and instructions, exactly as they will be in Sarvam.
 function editPanel(cur) {
   const e = R.editText, latest = latestOf(cur), live = cur.versions.find(v => v.status === "live");
   return `<div class="stack">
    <div class="nextstep"><span style="flex:1;min-width:200px"><b>Editing v${esc(latest.v)}.</b> ${openDraft(latest) ? `Saving updates draft v${esc(latest.v)}.` : `Saving creates v${esc(bumpV(latest.v))} as a draft.`} Nothing changes in Sarvam until it's approved and pushed.${latest.status === "approved" || latest.status === "pending" ? ` v${esc(latest.v)} is ${latest.status === "pending" ? "waiting for approval" : "approved"}; your edit will need approval again.` : ""}</span></div>
+   ${e.finalNotes && e.finalNotes.length ? `<div class="nextstep"><span style="flex:1;min-width:200px"><b>Recompiled.</b> Check it before saving. Changes: ${e.finalNotes.map(esc).join(" · ")}</span></div>` : ""}
    ${cur.agent ? `<label class="f">Greeting <span class="hint">(English. Sarvam regenerates the other languages from it. Keep variables as {{name}}.)</span><textarea id="ed-greeting" rows="3">${esc(e.greeting)}</textarea></label>` : ""}
    <label class="f">Instructions <span class="hint">(the full prompt, as it reads in Sarvam: markdown, Hindi and {{variables}} are kept exactly as you type them)</span>
     <textarea id="ed-text" class="mono" spellcheck="false" style="min-height:62vh;font-size:13px;line-height:1.55">${esc(e.text)}</textarea></label>
@@ -1695,7 +1711,7 @@ const ACT = {
     const r = await api("POST", `/agents/${encodeURIComponent(el.dataset.id)}/import`, { text: $("#imText").value, sarvamVersion: $("#imVer").value || null });
     closeModal(); R.curId = r.promptId; R.tab = "prompt"; toast(`Imported as v${r.v}`); if (route() === "improve") go(); else location.hash = "#improve";
   }, "Importing…"),
-  "open-prompt": el => { R.curId = el.dataset.id; R.agentId = null; R.tab = "prompt"; R.editText = null; closeModal(); },
+  "open-prompt": el => { R.curId = el.dataset.id; R.agentId = null; R.tab = "prompt"; R.editText = null; R.fin = null; closeModal(); },
   "open-agent": el => { R.agentId = el.dataset.id; R.callSrc = null; R.tab = "prompt"; R.viewSections = false; R.viewRaw = false; R.cmpOpen = null; R.editText = null; R.call = null; R.fbSel = new Set(); },
   tab: el => { R.tab = el.dataset.t; if (R.tab === "calls" && mainAgent()) loadReviews(mainAgent()); const agent = curAgent(); if (R.tab === "calls" && agent && (!R.calls || R.calls.agentId !== agent.id)) loadCalls(agent); if (R.tab === "settings" && agent && (!R.acfg || R.acfg.agentId !== agent.id)) loadCfg(agent); render(); window.scrollTo(0, 0); },
   // Calls
@@ -1794,6 +1810,9 @@ const ACT = {
   "kbd-all": el => { const D = kbImp().draft; if (!D) return; [...D.facts, ...D.faqs].forEach(x => x.on = el.dataset.on === "1"); render(); },
   "kb-paste-add": () => { const I = kbImp(), t = (I.paste || "").trim(); if (t.length < 20) return toast("Paste some text first."); I.files.push({ name: `Pasted text ${I.files.filter(f => /^Pasted text/.test(f.name)).length + 1}`, size: t.length, text: t, facts: [], faqs: [], status: "ready" }); I.paste = ""; render(); },
   "kb-accept": () => { const I = kbImp(), D = I.draft, kb = L.cfg.kb; if (!D) return;
+    if (R.fin) { const F = R.fin; const f = D.facts.filter(x => x.on), q = D.faqs.filter(x => x.on);
+      F.kb.facts.push(...f.map(({ k, v, src, kind }) => ({ k, v, src, kind }))); F.kb.faqs.push(...q.map(({ q, a, src }) => ({ q, a, src })));
+      I.draft = null; render(); toast(`Added ${f.length + q.length} to the knowledge base for this finalize.`); return; }
     // Inside New prompt: the ticked facts and FAQs become rules of the prompt's facts section.
     if (R.kbTarget && L.np && route() === "create") { const np = L.np, sec = R.kbTarget.sec; let n = 0;
       D.facts.filter(x => x.on).forEach(f => { if (npAdd(np, sec, { text: `${f.k}: ${f.v}`, from: { agent: f.src || "documents" } })) n++; });
@@ -1905,6 +1924,17 @@ const ACT = {
   },
   "view-mode": el => { R.viewRaw = el.dataset.m === "raw"; R.viewSections = el.dataset.m === "sections"; render(); },
   "edit-text": () => startEdit(),
+  "fin-open": el => { R.fin = { pid: el.dataset.pid || R.curId, kb: { facts: [], faqs: [] } }; R.editText = null; R.kbImp = null; R.tab = "prompt"; render(); window.scrollTo(0, 0); },
+  "fin-cancel": () => { R.fin = null; R.kbImp = null; render(); },
+  "fin-kb-clear": () => { if (R.fin) R.fin.kb = { facts: [], faqs: [] }; render(); },
+  "fin-run": el => run(el, async () => {
+    const cur = R.cur, F = R.fin; if (!cur || !F) return;
+    const text = R.sv && R.sv.text ? R.sv.text : mdOf(cur.prompt.cfg, latestOf(cur), false), greeting = greetingNow();
+    const r = await api("POST", `/prompts/${F.pid}/finalize`, { text, greeting, kb: F.kb });
+    R.editText = { text: r.text, orig: text, greeting, og: greeting, finalNotes: r.changes || [] };
+    R.fin = null; R.kbImp = null; render(); window.scrollTo(0, 0);
+    toast("Recompiled. Check it, then save it as a new draft.");
+  }, "Recompiling (about a minute)…"),
   "open-edit": el => { R.curId = el.dataset.id; R.agentId = null; R.tab = "prompt"; R.pendingEdit = true; },
   "cancel-text": () => { const e = R.editText; if (e && (e.text !== e.orig || e.greeting !== e.og) && !confirm("Discard your edits?")) return; R.editText = null; render(); },
   "save-text": el => run(el, async () => {

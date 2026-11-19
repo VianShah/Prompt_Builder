@@ -793,4 +793,49 @@ At most 10 differences, most important first.`;
     differences: (Array.isArray(d.differences) ? d.differences : []).filter(x => x && x.area).slice(0, 10).map(x => ({ area: String(x.area), a: String(x.a || ''), b: String(x.b || ''), risk: ['high', 'medium', 'low'].includes(x.risk) ? x.risk : 'low' })) };
 }
 
-module.exports = { reviewCall, MISTAKE_CATS, CALL_TYPES, resplit, readImagesToText, reviewWithFixes, kbFromDocs, SKELETON, factoryMap, factoryAssemble, factoryReview, factoryRevise, diagnoseGroup, buildTests, runTest, optimizePrompt, applyEdits, analyzeTranscript, critiqueFix, mapFeedback, draftFix, review, kbDraft, importPrompt, diagnoseCall, compareSummary };
+// ---------- Finalize: recompile the whole prompt with the knowledge base and its lookup section ----------
+// Returns the recompiled text for the editor. Nothing is saved here; the engineer reviews it and saves a draft.
+const finalErr = msg => Object.assign(new Error(msg), { code: 'invalid_json', publicMessage: msg });
+async function finalizePrompt({ text, greeting, kb, client, product }) {
+  const T = String(text || '');
+  const facts = ((kb && kb.facts) || []).map(f => `- ${f.k}: ${f.v}`).join('\n');
+  const faqs = ((kb && kb.faqs) || []).map(f => `Q: ${f.q}\nA: ${f.a}`).join('\n');
+  const req = `You are finalising a voice-agent prompt (${K().t}, ${K().domain}) for ${client || 'the client'}${product ? `, product: ${product}` : ''}. Every section has been drafted. Recompile the WHOLE prompt into one stronger, cleaner prompt.
+
+Do all of this:
+1. Repetition: the same rule stated in several places becomes one clear copy, in the most logical section. Remove the others.
+2. Contradictions: keep one rule. Prefer the stricter or compliance-safe one, and say which you kept in "changes".
+3. Uncertainty and hallucination: any product fact, fee, limit, offer, date or policy that is neither in the KNOWLEDGE BASE below nor a rule the prompt already states must be removed. Never add facts from your own knowledge.
+4. Vague wording: rewrite so the agent can read it only one way.
+5. Knowledge base lookup: add a section titled "Knowledge base" (or update the existing one). It must tell the agent that it has a knowledge base query tool with two parameters: "knowledge_base" (which knowledge base to search, chosen from each one's description) and "query" (a short, self-contained search written from what the customer asked, with product and names spelled out). It must say:
+   - when to use it: questions about product features, fees, eligibility, offers, documents, policy or process;
+   - when not to: greetings, small talk, the customer's own account or personal data, and anything the call variables already answer;
+   - how to answer: only from what the lookup returned, in short spoken sentences; never guess a figure;
+   - if nothing relevant comes back: say so plainly and offer a callback or a follow-up. Never invent an answer.
+   Keep facts inside the prompt only when they are short and needed on every call. Otherwise leave them to the knowledge base.
+6. Keep exactly: every {{variable}}, every tool name, every compliance and disclosure line, every line the agent speaks word for word, the language and script of each passage, and the markdown headings. Do not drop any rule that changes behaviour. Do not weaken compliance.
+
+KNOWLEDGE BASE (facts and FAQs the engineer approved for this agent):
+${facts || '(none)'}
+${faqs}
+
+GREETING (spoken first by the agent; keep it out of the prompt body): ${greeting || '(none)'}
+
+Reply with only JSON: {"text": "the full recompiled prompt, markdown", "changes": ["one short line per meaningful change"]}
+
+THE PROMPT (${T.length} characters):
+<<<
+${T}
+>>>`;
+  const r = await llm.json(req, { maxTokens: 16000, timeoutMs: 420000 });
+  const out = String((r.data && r.data.text) || '').trim();
+  if (out.length < 200) throw finalErr('The AI returned no prompt. Try Recompile again.');
+  // Every variable the prompt used must still be there, or the call would lose a value.
+  const vars = s => new Set((String(s).match(/\{\{\s*[A-Za-z0-9_]+\s*\}\}/g) || []).map(v => v.replace(/\s+/g, '')));
+  const lost = [...vars(T)].filter(v => !vars(out).has(v));
+  if (lost.length) throw finalErr(`The recompiled prompt dropped ${lost.join(', ')}. Nothing was changed; try Recompile again.`);
+  const changes = (Array.isArray(r.data && r.data.changes) ? r.data.changes : []).map(x => String(x).slice(0, 300)).slice(0, 40);
+  return { text: out, changes, provider: r.provider };
+}
+
+module.exports = { finalizePrompt, reviewCall, MISTAKE_CATS, CALL_TYPES, resplit, readImagesToText, reviewWithFixes, kbFromDocs, SKELETON, factoryMap, factoryAssemble, factoryReview, factoryRevise, diagnoseGroup, buildTests, runTest, optimizePrompt, applyEdits, analyzeTranscript, critiqueFix, mapFeedback, draftFix, review, kbDraft, importPrompt, diagnoseCall, compareSummary };
