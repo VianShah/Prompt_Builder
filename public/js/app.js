@@ -2000,6 +2000,7 @@ document.addEventListener("keydown", e => { if (e.key === "Escape" && !$("#modal
 
 document.addEventListener("input", e => {
   const el = e.target;
+  if (el.dataset.npAns) { const f = npFind(npState(), el.dataset.id), n = f && (f.x.notes || []).find(y => y.id === el.dataset.npAns); if (n) { n.draft = el.value; saveLocal(); } return; } // answers survive a redraw
   if (el.dataset.bind && el.type !== "checkbox" && el.tagName !== "SELECT") { let v = el.value; if (el.type === "number") v = Number(v) || 0; setPath(L.cfg, el.dataset.bind, v); R.aiReview = null; commit(false); return; }
   if (el.dataset.kb) { setPath(L.cfg.kb, el.dataset.kb, el.value); saveLocal(); refreshInsights(); return; }
   if (el.dataset.tocJump != null) { const t = document.getElementById(el.value); if (t) t.scrollIntoView({ behavior: "smooth", block: "start" }); el.value = ""; return; }

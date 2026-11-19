@@ -140,6 +140,28 @@ Reply with only JSON: {"text": "the tailored rule", "changes": "one sentence on 
   return { text: out, changes: clip(r.data.changes, 400), provider: r.provider };
 }
 
+// ---------- work the engineer's answers into many rules in ONE AI call ----------
+// items: [{ id, section, title, text, answers: [{ ask, answer }] }]. Only rules that came back with text are changed.
+async function refineWithAnswers({ items, info }) {
+  const list = (items || []).filter(x => x && String(x.text || '').trim() && (x.answers || []).length).slice(0, 60);
+  if (!list.length) throw err('No answers to apply.');
+  const body = list.map(x => `--- RULE id=${x.id} · SECTION: ${clip(x.section, 80)} · TITLE: ${clip(x.title, 80)}
+${String(x.text).slice(0, 4000)}
+ANSWERS FROM THE ENGINEER:
+${x.answers.map(a => `- Q: ${clip(a.ask, 300)}\n  A: ${clip(a.answer, 800)}`).join('\n')}`).join('\n\n');
+  const req = `Several rules of a voice-agent prompt each raised questions for the engineer. The engineer has answered them (questions marked not applicable are already left out). Work each answer into its own rule, exactly as given. Keep everything else in the rule unchanged: its conditions, numbers and every {{call_variable}}. Do not touch rules that have no answers, do not merge or reorder rules, and do not add behaviour the answers don't call for.
+THE AGENT: ${JSON.stringify(info || {}).slice(0, 3000)}
+
+${body}
+
+Reply with only JSON: {"rules": [{"id": "the rule id above", "text": "the updated rule", "changes": "one sentence on what changed"}]}`;
+  const r = await llm.json(req, { maxTokens: 12000, timeoutMs: 300000 });
+  const ids = new Set(list.map(x => String(x.id)));
+  const rules = ((r.data && r.data.rules) || []).filter(x => x && ids.has(String(x.id)) && String(x.text || '').trim()).map(x => ({ id: String(x.id), text: String(x.text).trim(), changes: clip(x.changes, 300) }));
+  if (!rules.length) throw err('The AI returned no updated rules. Try again.');
+  return { rules, provider: r.provider };
+}
+
 // ---------- a library from documents (agent types with no live agents yet, e.g. sales) ----------
 // mode 'draft' (New prompt): rule text stays clean; what only the engineer can answer comes back as questions per rule.
 async function libraryFromDocs({ agentType, docs, skeleton, mode }) {
@@ -178,4 +200,4 @@ function splitBySkeleton(text, skeleton) {
   return { sections: out, unplaced: extra };
 }
 
-module.exports = { TYPES, slug, deriveSkeleton, extractRules, mergeSection, bestModules, refineRule, libraryFromDocs, splitBySkeleton };
+module.exports = { TYPES, slug, deriveSkeleton, extractRules, mergeSection, bestModules, refineRule, refineWithAnswers, libraryFromDocs, splitBySkeleton };

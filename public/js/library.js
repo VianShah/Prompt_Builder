@@ -123,12 +123,20 @@ function npSource(np, lib) {
    ${Object.values(np.secs).flat().length ? `<div class="small" style="color:var(--warn)">Continuing replaces the ${Object.values(np.secs).flat().length} rules already in Review.</div>` : ""}
    <div class="step-foot"><button class="btn ghost" data-act="np-step" data-i="0">← Back</button><button class="btn primary" data-act="np-go-review" ${s.kind === "agent" && !s.agentId ? "disabled" : ""}>Next: Review →</button></div></div>`;
 }
+// One bar for every open question: answer them beside their rules, then apply all in a single AI call.
+const NP_NA = /^\s*(n\/?a|not applicable|na|skip|dismiss|don'?t (want to )?answer.*|no answer)\s*\.?\s*$/i;
+function npNotesBar(np) {
+  const open = npOpenNotes(np); if (!open.length) return "";
+  const ready = open.filter(o => (o.note.draft || "").trim()).length;
+  return `<div class="np-notesbar"><div><b>${open.length} question${open.length === 1 ? "" : "s"} to answer</b><div class="small muted">Answer them beside their rules. Write N/A (or click Not applicable) on any you don't want to answer. Nothing is rewritten until you apply them all at once.</div></div>
+   <div class="row" style="gap:8px"><button class="btn primary ai" data-act="np-notes-apply-all" ${aiOn() ? "" : "disabled title='No AI model configured'"}>Apply all answers${ready ? ` (${ready})` : ""}</button></div></div>`;
+}
 function npRuleRow(np, secId, x, sk) {
   const open = (x.notes || []).filter(n => !n.done);
   if (!open.length) return npRuleBox(np, secId, x, sk);
   return `<div class="np-row">${npRuleBox(np, secId, x, sk)}<div class="np-notes">${open.map(n => `<div class="np-note" id="np-note-${n.id}"><div class="small"><b>Question</b> ${esc(n.ask)}</div>
-    <input type="text" id="np-ans-${n.id}" placeholder="Your answer">
-    <div class="row" style="gap:8px"><button class="btn sm primary ai" data-act="np-note-apply" data-id="${x.id}" data-n="${n.id}">Apply</button><a href="#" class="small" data-act="np-note-x" data-id="${x.id}" data-n="${n.id}">Dismiss</a></div></div>`).join("")}</div></div>`;
+    <input type="text" id="np-ans-${n.id}" data-np-ans="${n.id}" data-id="${x.id}" value="${esc(n.draft || "")}" placeholder="Your answer, or N/A">
+    <div class="row" style="gap:10px"><a href="#" class="small" data-act="np-note-na" data-id="${x.id}" data-n="${n.id}">Not applicable</a><a href="#" class="small" data-act="np-note-x" data-id="${x.id}" data-n="${n.id}">Dismiss</a></div></div>`).join("")}</div></div>`;
 }
 function npRuleBox(np, secId, x, sk) {
   const ed = R.npEdit === x.id, rf = R.npRefine === x.id;
@@ -161,6 +169,7 @@ function npReview(np, lib) {
    <div class="row" style="justify-content:space-between;align-items:flex-end"><div><h2>Review</h2><p class="muted">${filled} of ${sk.sections.length} sections filled. Add rules from the library, or let the AI choose the best ones for this agent.</p></div>
     ${lib.entries.length || lib.builtins.length ? `<button class="btn primary ai" data-act="np-best" ${aiOn() ? "" : "disabled title='No AI model configured'"}>Use the best modules</button>`
       : `<button class="btn primary ai" data-act="np-draft" ${aiOn() ? "" : "disabled title='No AI model configured'"} title="Writes a first draft of every section from the client details${kbImp().files.some(f => f.status === "ready") ? " and the documents you added" : ""}">Draft the sections with AI</button>`}</div>
+   ${npNotesBar(np)}
    ${sk.starter ? `<div class="small muted">Standard ${npTypeT(np.info.type).toLowerCase()} structure (the library has none confirmed yet). ${lib.entries.length ? "" : "Nothing in the library yet: draft the sections with AI, write them, or add facts from documents."}</div>` : ""}
    ${R.npBestNote ? `<div class="small muted">${esc(R.npBestNote)}</div>` : ""}
    <section class="np-sec"><div class="np-sh"><h3>Greeting</h3><span class="chip">required</span><span class="small muted">${esc(sk.greeting.desc || "")}</span></div>
@@ -301,14 +310,30 @@ Object.assign(ACT, {
     np.greeting = np.greeting.replace(re, to); Object.values(np.secs).flat().forEach(x => { x.text = x.text.replace(re, to); }); commit(); toast(`Replaced with ${to}. Check the agent's name too.`); },
   "np-notes-go": () => { const o = npOpenNotes(npState())[0]; if (!o) return; const el = document.getElementById(`np-note-${o.note.id}`); if (el) { el.scrollIntoView({ behavior: "smooth", block: "center" }); const i = $(`#np-ans-${o.note.id}`); if (i) i.focus({ preventScroll: true }); } },
   "np-note-x": el => { const f = npFind(npState(), el.dataset.id); const n = f && (f.x.notes || []).find(y => y.id === el.dataset.n); if (n) n.done = true; commit(); },
-  "np-note-apply": el => run(el, async () => {
-    const np = npState(), f = npFind(np, el.dataset.id); if (!f) return;
-    const n = (f.x.notes || []).find(y => y.id === el.dataset.n), ans = (($(`#np-ans-${el.dataset.n}`) || {}).value || "").trim();
-    if (!ans) throw new Error("Type the answer first.");
-    const sec = libOf(np.info.type).skeleton.sections.find(s => s.id === f.sec) || {};
-    const r = await api("POST", `/library/${np.info.type}/refine`, { ref: f.x.ref || null, text: f.x.text, title: f.x.title || sec.title, section: f.sec, info: np.info, save: false,
-      note: `The engineer answered the question "${n.ask}": ${ans}. Work this answer into the rule exactly; change nothing else.` });
-    f.x.text = r.text; if (r.ref) { f.x.ref = r.ref; f.x.refined = true; } n.done = true; n.answer = ans; commit();
+  "np-note-na": el => { const f = npFind(npState(), el.dataset.id); const n = f && (f.x.notes || []).find(y => y.id === el.dataset.n); if (n) { n.done = true; n.answer = "N/A"; } commit(); },
+  // Every answered question goes to the AI together, one call; N/A ones are closed without it. Blank ones stay open.
+  "np-notes-apply-all": el => run(el, async () => {
+    const np = npState(), sk = libOf(np.info.type).skeleton, items = [], closed = [];
+    npOpenNotes(np).forEach(o => {
+      const box = document.getElementById(`np-ans-${o.note.id}`), ans = (box ? box.value : o.note.draft || "").trim();
+      if (!ans) return;
+      if (NP_NA.test(ans)) { closed.push({ note: o.note, ans: "N/A" }); return; }
+      let it = items.find(i => i.id === o.rule.id);
+      if (!it) { const s = sk.sections.find(z => z.id === o.sec) || {}; items.push(it = { id: o.rule.id, section: s.title || o.sec, title: o.rule.title || s.title || "", text: o.rule.text, answers: [], notes: [] }); }
+      it.answers.push({ ask: o.note.ask, answer: ans }); it.notes.push({ note: o.note, ans });
+    });
+    if (!items.length && !closed.length) throw new Error("Answer at least one question first, or write N/A on the ones to skip.");
+    let changed = 0;
+    if (items.length) {
+      const r = await api("POST", `/library/${np.info.type}/refine-batch`, { info: np.info, items: items.map(({ id, section, title, text, answers }) => ({ id, section, title, text, answers })) });
+      (r.rules || []).forEach(u => {
+        const f = npFind(np, u.id), it = items.find(i => i.id === u.id); if (!f || !it) return;
+        f.x.text = u.text; f.x.ref = null; f.x.edited = true; changed++;
+        it.notes.forEach(({ note, ans }) => { note.done = true; note.answer = ans; });
+      });
+    }
+    closed.forEach(c => { c.note.done = true; c.note.answer = c.ans; });
+    commit(); toast(`${changed} rule${changed === 1 ? "" : "s"} updated${closed.length ? `, ${closed.length} skipped as not applicable` : ""}.`);
   }, "Applying…"),
   "np-lib": el => { R.npLib = R.npLib === el.dataset.sec ? null : el.dataset.sec; R.npOpen = null; render(); const s = document.getElementById(`np-sec-${el.dataset.sec}`); if (s) s.scrollIntoView({ block: "start", behavior: "smooth" }); },
   "np-lib-x": () => { R.npLib = null; render(); },

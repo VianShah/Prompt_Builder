@@ -8,7 +8,8 @@
 //   POST /library/:type/source              a live agent's prompt split into the skeleton's sections
 //   POST /library/:type/best                the best-fitting rules for a new agent, per section
 //   POST /library/:type/refine              tailor one rule to the new agent; saved to the library as a variant
-//   POST /library/:type/compose             save the assembled prompt as a draft (then approve and push as usual)
+//   POST /library/:type/refine-batch        apply every answered drafting question in one AI call
+//   POST /library/:type/compose            save the assembled prompt as a draft (then approve and push as usual)
 const express = require('express');
 const db = require('../db');
 const PB = require('../../shared/blocks');
@@ -251,6 +252,16 @@ r.post('/library/:type/refine', h(async (req, res) => {
     history: [{ at: now(), by: req.user.email, action: 'refined', note: note ? String(note).slice(0, 300) : out.changes }] });
   await audit(req.user, 'library.refine', { type, from: ref || null, module: mid });
   res.json({ text: out.text, changes: out.changes, ref: `M:${doc.id}`, moduleId: mid, provider: out.provider });
+}));
+
+// All the engineer's answers to drafting questions, applied in one AI call. Nothing is saved to the library.
+r.post('/library/:type/refine-batch', h(async (req, res) => {
+  if (!can(req.user, 'edit')) throw fail(403, 'Your role cannot do this.');
+  typeOf(req);
+  const { items, info } = req.body || {};
+  if (!Array.isArray(items) || !items.length) throw fail(400, 'No answers to apply.');
+  const out = await lt.refineWithAnswers({ items, info });
+  res.json(out);
 }));
 
 // Save: the Greeting plus the Instructions in the skeleton's order, as a draft version.
