@@ -216,7 +216,7 @@ const mdOf = (cfg, v, tags = true) => toMarkdown(header(cfg, v.v), v.order, v.se
 // ---------- Router ----------
 const ROUTES = {
   overview: { view: viewOverview, load: () => Promise.all([loadPrompts(true), loadAgents(true), api("GET", "/approvals").then(r => R.approvals = r.items), api("GET", "/core-changes").then(r => R.core = r.items)]) },
-  agents: { view: viewAgents, load: async () => { await Promise.all([loadAgents(true), loadPrompts(true), api("GET", "/sarvam/status").then(r => R.sarvam = r).catch(() => R.sarvam = null)]); api("GET", "/agents/pull-all/status").then(j => { if (j && j.state === "running") { R.pullJob = j; pollPull(); } }).catch(() => { }); } },
+  agents: { view: viewAgents, load: async () => { await Promise.all([loadAgents(true), loadPrompts(true), api("GET", "/sarvam/status").then(r => R.sarvam = r).catch(() => R.sarvam = null)]); api("GET", "/agents/pull-all/status").then(j => { if (j && j.state === "running") { R.pullJob = j; pollPull(); } else autoPull(); }).catch(() => { }); } },
   create: { view: () => "", load: null }, // New prompt: set in library.js
   improve: { view: viewImprove, load: async () => {
     await Promise.all([loadPrompts(true), loadAgents(true), api("GET", "/sarvam/status").then(r => R.sarvam = r).catch(() => R.sarvam = null)]);
@@ -339,6 +339,15 @@ function pullBar() {
   if (j.state === "running") return `<div class="notice" style="flex-direction:column;align-items:stretch;gap:6px"><div class="row" style="justify-content:space-between"><b>Loading prompts from Sarvam · ${j.done} of ${j.total}</b><span class="small muted">${(j.current || []).map(esc).join(", ")}</span></div><div style="height:4px;border-radius:2px;background:var(--sunk)"><div style="height:4px;border-radius:2px;background:var(--accent);width:${pct}%"></div></div><div class="small muted">You can leave this page. It keeps going.</div></div>`;
   const bad = (j.errors || []).length;
   return `<div class="notice ${j.state === "done" && !j.failed ? "ok" : ""}" style="flex-direction:column;align-items:stretch;gap:4px"><div class="row" style="justify-content:space-between"><span><b>${j.state === "done" ? "Loaded all prompts" : "Stopped: " + esc(j.stopped || "")}</b> · ${j.imported} new or updated, ${j.unchanged} already current${j.failed ? `, ${j.failed} couldn't be loaded` : ""}</span><a href="#" class="small" data-act="pull-bar-x">dismiss</a></div>${bad ? `<details class="small"><summary>${bad} note${bad === 1 ? "" : "s"}</summary>${j.errors.map(e => `<div class="muted">${esc(e)}</div>`).join("")}</details>` : ""}</div>`;
+}
+// Every agent's prompt loads by itself once Sarvam is connected, so "how other agents handle this"
+// has something to compare. Once per page load, and only when some agent has no prompt yet.
+async function autoPull() {
+  if (R.autoPulled || !canDo("edit") || !(R.sarvam && R.sarvam.hasToken && !R.sarvam.expired)) return;
+  const missing = (R.agents || []).filter(a => !(R.prompts || []).some(p => p.id === a.promptId) && !a.sarvamPullError).length;
+  if (!missing) return;
+  R.autoPulled = true;
+  try { R.pullJob = await api("POST", "/agents/pull-all/start"); render(); pollPull(); } catch (_) { }
 }
 async function pollPull() {
   if (R.pullPoll) return;
@@ -1302,12 +1311,36 @@ function fbCard(it, latest) {
        ${it.draft && !stale && !ed ? `<button class="btn sm primary" data-act="apply" data-id="${it.id}" ${edit ? "" : "disabled"}>${openDraft(latest) ? `Add to draft v${esc(latest.v)}` : "Apply as new draft"}</button>` : ""}
        ${ed ? `<button class="btn sm primary" data-act="apply-edit" data-id="${it.id}">${openDraft(latest) ? `Add edit to draft v${esc(latest.v)}` : "Apply edit as new draft"}</button><button class="btn sm" data-act="cancel-edit" data-id="${it.id}">Cancel</button>` : `<button class="btn sm" data-act="edit" data-id="${it.id}">Edit by hand</button>`}
      </div>
+     ${edit ? examplesPanel(it) : ""}
      ${more}` : ""}
    ${it.status === "new" ? `<div class="small muted">Not placed in the prompt yet.</div>` : ""}
    ${it.status === "dismissed" ? `<div class="row"><span class="small muted">Dismissed.</span><button class="btn sm ghost" data-act="undismiss" data-id="${it.id}">Restore</button></div>` : ""}
   </div>`;
 }
 
+// How other agents of the same type handle this item: free word matching, AI search on request.
+// "Use for this agent" turns a passage into a note on the item and drafts the fix with it.
+function examplesPanel(it) {
+  const X = (R.ex || {})[it.id];
+  if (!X) return `<a href="#" class="small" data-act="ex-open" data-id="${it.id}">See how other agents handle this</a>`;
+  const kind = (R.cur && R.cur.prompt && R.cur.prompt.agentType) === "sales" ? "sales" : "collections";
+  const list = X.examples || [];
+  return `<div class="ex-panel"><div class="row" style="justify-content:space-between;gap:8px"><b class="small">How other ${kind} agents handle this</b><a href="#" class="small" data-act="ex-close" data-id="${it.id}">Close</a></div>
+   ${X.loading ? `<div class="small muted">Searching ${X.ai ? "with AI" : "other agents' prompts"}…</div>` : ""}
+   ${!X.loading && !list.length ? `<div class="small muted">${X.searched ? `Nothing in ${X.searched} other ${kind} agent${X.searched === 1 ? "" : "s"} matches this by wording.` : `No other ${kind} agent has a prompt loaded yet.`}</div>` : ""}
+   ${list.map((e, i) => `<div class="ex">
+     <div class="small muted">${esc(e.agent)} · v${esc(e.v)}${e.live ? " (live)" : ""} · ${esc(e.sectionTitle)}${e.viaAi ? ` · <span class="chip acc">AI pick</span>` : e.hits && e.hits.length ? ` · matched: ${e.hits.slice(0, 5).map(esc).join(", ")}` : ""}</div>
+     <div class="ex-text">${mdInline(e.text).replace(/\n/g, "<br>")}</div>
+     <div class="row" style="gap:8px"><button class="btn sm primary ai" data-act="ex-use" data-id="${it.id}" data-i="${i}" ${aiOn() ? "" : "disabled title='No AI model configured'"} title="Adds this as a note on the item and drafts the fix, in this agent's own names and rules">Use for this agent</button><button class="btn sm ghost" data-act="ex-copy" data-id="${it.id}" data-i="${i}">Copy</button></div></div>`).join("")}
+   ${!X.loading ? `<div class="row" style="gap:10px">${X.ai ? `<span class="small muted">AI picks${X.provider ? ` · ${esc(X.provider)}` : ""}</span><a href="#" class="small" data-act="ex-open" data-id="${it.id}">Back to word matches</a>` : `<button class="btn sm ai" data-act="ex-ai" data-id="${it.id}" ${aiOn() ? "" : "disabled title='No AI model configured'"} title="Finds passages that say the same thing in other words. A small AI call.">Find more with AI</button>`}<span class="small muted">Other lenders' names, links and numbers are hidden.</span></div>` : ""}
+  </div>`;
+}
+async function exLoad(id, ai) {
+  R.ex = R.ex || {}; R.ex[id] = { loading: true, ai, examples: [] }; render();
+  try { R.ex[id] = { ...(await api("GET", `/feedback/${id}/examples${ai ? "?ai=1" : ""}`)), ai }; }
+  catch (e) { R.ex[id] = { examples: [], ai, searched: 0 }; toast(e.message); }
+  render();
+}
 // A fix marked "every agent": it's in the library; the approver picks which other agents get it.
 // Nothing changes on another agent until picked, and each picked agent gets a draft to approve as usual.
 R.sp = R.sp || {};
@@ -1700,7 +1733,6 @@ const ACT = {
   "sync-note-x": () => { R.syncNote = ""; render(); },
   "pull-all": el => run(el, async () => { R.pullJob = await api("POST", "/agents/pull-all/start"); render(); pollPull(); }, "Starting…"),
   "pull-bar-x": () => { R.pullJob = null; render(); },
-  "pull-all": el => run(el, async () => { const r = await api("POST", "/agents/pull-prompts"); await reloadAgents(); toast(promptMsg(r)); }, "Pulling…"),
   pull: el => run(el, async () => { const r = await api("POST", `/agents/${encodeURIComponent(el.dataset.id)}/pull`); await reloadAgents(); toast(r.changed ? `Imported as v${r.v}` : "Already up to date with Sarvam"); }, "Pulling…"),
   "sarvam-finish": el => run(el, async () => {
     const pasted = ($("#sv-paste") || {}).value || "";
@@ -1764,6 +1796,18 @@ const ACT = {
   "open-agent-calls": el => { R.agentId = el.dataset.id; R.tab = "calls"; R.call = null; R.editText = null; go(); },
   // Fix several feedback items in one version
   "fb-selall": () => { R.fbSel = new Set((R.feedback || []).filter(i => i.status === "mapped").map(i => i.id)); render(); },
+  "ex-open": el => exLoad(el.dataset.id, false),
+  "ex-ai": el => exLoad(el.dataset.id, true),
+  "ex-close": el => { if (R.ex) delete R.ex[el.dataset.id]; render(); },
+  "ex-copy": async el => { const e = ((R.ex || {})[el.dataset.id] || {}).examples[+el.dataset.i]; if (!e) return; try { await navigator.clipboard.writeText(e.text); toast("Copied."); } catch (_) { toast("Couldn't copy here. Select the text and copy it."); } },
+  "ex-use": el => run(el, async () => {
+    const id = el.dataset.id, e = ((R.ex || {})[id] || {}).examples[+el.dataset.i]; if (!e) return;
+    const p = R.cur && R.cur.prompt, client = (p && ((p.cfg && p.cfg.client && p.cfg.client.name) || (p.info && p.info.client))) || "this client";
+    const text = `Handle this the way another ${p && p.agentType === "sales" ? "sales" : "collections"} agent does, adapted to ${client}: keep this agent's own names, amounts, channels and rules, and replace [client] and [agent name] with this agent's. Their wording:\n"""\n${e.text}\n"""`;
+    await api("POST", `/feedback/${id}/draft`, { guidance: [{ text }] });
+    if (R.ex) delete R.ex[id];
+    await reloadCur(); toast("Drafted the fix from that example. Check the change below.");
+  }, "Drafting…"),
   "draft-notes": el => run(el, async () => {
     const id = el.dataset.id, own = (($("#gd-" + id) || {}).value || "").trim();
     const it = item(id);

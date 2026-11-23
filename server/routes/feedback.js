@@ -180,6 +180,16 @@ r.delete('/feedback/:id', h(async (req, res) => {
   res.json({ ok: true });
 }));
 
+// How other agents of the same type handle what this item is about. Free word matching by default;
+// ?ai=1 asks the AI to pick from short snippets (a few hundred tokens).
+const examples = require('../lib/examples');
+r.get('/feedback/:id/examples', h(async (req, res) => {
+  const it = await loadItem(req.params.id);
+  if (!it.map) throw fail(409, 'Map this item to a section first.');
+  const p = await getPrompt(it.promptId), v = await latestVersion(it.promptId);
+  res.json(req.query.ai === '1' ? await examples.aiPick(p, v, it) : await examples.match(p, v, it));
+}));
+
 r.post('/feedback/:id/draft', h(async (req, res) => {
   const it = await loadItem(req.params.id);
   if (!it.map) throw fail(409, 'Map this item to a section first.');
