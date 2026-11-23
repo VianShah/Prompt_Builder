@@ -705,10 +705,13 @@ function sarvamTestPanel(cur) {
    ${!sOn ? `<div class="small" style="color:var(--warn)">Connect Sarvam on the Agents page first.</div>` : ""}
    <div class="fgrid"><label class="f">Agent to test on<select id="svt-agent" data-act-change="svt-agent"><option value="">Choose…</option>${agents.map(a => `<option value="${esc(a.id)}" ${a.id === pick ? "selected" : ""}>${esc(a.name)}${a.id === own ? " (this agent)" : a.id === uat ? " (UAT)" : ""}</option>`).join("")}</select></label>
     <label class="f">Your own conversation <span class="hint">(optional: one customer line per line, from the first hello)</span><textarea id="svt-script" rows="3" placeholder="Hello&#10;Haan ji, main hi bol raha hoon&#10;Abhi paise nahi hain">${esc(R.svtScript || "")}</textarea></label></div>
+   <label class="f">Test values <span class="hint">(optional, one per line, e.g. emi_amount = 9000. Sarvam's chat can't take call values, so these fill the variables the test adds for the run. The agent's own variables are never changed.)</span><textarea id="svt-values" rows="2" placeholder="customer_name = Rahul Sharma&#10;emi_amount = 9000&#10;today_date = 23 November 2026">${esc(R.svtValues || "")}</textarea></label>
    <div class="row" style="gap:8px"><button class="btn sm primary" data-act="svt-run" data-vid="${latest.id}" ${sOn && canDo("edit") ? "" : "disabled"}>Run on Sarvam</button><span class="small muted">About ${nTests ? Math.max(1, Math.round(nTests * 0.3)) : 1} minute. ${aiOn() ? "Each test is then judged against what it must and must not do." : "No AI model, so results are shown without a verdict."}</span></div>
    ${T ? `<div class="stack" style="gap:8px;border-top:1px solid var(--line);padding-top:12px">
      <div class="row" style="gap:8px;flex-wrap:wrap"><b class="small">On ${esc(T.agent.name)}${T.draftVersion ? ` · Sarvam draft v${esc(T.draftVersion)}` : ""}</b>${T.total && T.kind !== "script" ? (T.passed + T.failed ? `<span class="chip ${T.failed ? "err" : T.passed === T.total ? "ok" : ""}">${T.passed} of ${T.total} passed</span>` : `<span class="chip">not judged</span>`) : ""}<span class="small muted">${esc(fmtDate(T.at))} · ${esc((T.by || "").split("@")[0])}</span></div>
      <div class="small" style="color:${T.restore && T.restore.ok === false ? "var(--err)" : "var(--muted)"}">${esc((T.restore && T.restore.note) || "")}</div>
+     ${Object.keys(T.valuesUsed || {}).length ? `<div class="small muted">Test values: ${Object.entries(T.valuesUsed).map(([k, v]) => `{{${esc(k)}}} = ${esc(v)}`).join(" · ")}</div>` : ""}
+     ${(T.valuesSkipped || []).length ? `<div class="small" style="color:var(--warn)">Not used (the agent already has these, and its own variables are never changed): ${T.valuesSkipped.map(v => `{{${esc(v)}}}`).join(", ")}</div>` : ""}
      ${(T.missingVariables || []).length ? `<div class="small" style="color:var(--warn)">This agent has no ${T.missingVariables.map(v => `{{${esc(v)}}}`).join(", ")}: those parts of the prompt ran without a value. Add them to the Sarvam agent before going live.</div>` : ""}
      ${T.conversations.map(c => `<div class="fb" style="gap:6px;border-left:4px solid ${c.pass ? "var(--ok)" : c.pass === false ? "var(--err)" : "var(--line)"}">
        <b class="small">${c.pass ? "✓ " : c.pass === false ? "✗ " : ""}${esc(c.title)}</b>
@@ -1878,11 +1881,11 @@ const ACT = {
   }, "Saving the draft…"),
   "mod-tests": el => run(el, async () => { const U = R.modUse; await api("POST", `/modules/${R.modId}/tests/run`, { agentId: U.agentId }); await loadMod(R.modId); render(); }, "Running tests (about a minute)…"),
   "svt-run": el => run(el, async () => {
-    const agentId = ($("#svt-agent") || {}).value; R.svtScript = ($("#svt-script") || {}).value || "";
+    const agentId = ($("#svt-agent") || {}).value; R.svtScript = ($("#svt-script") || {}).value || ""; R.svtValues = ($("#svt-values") || {}).value || "";
     if (!agentId) throw new Error("Choose the agent to test on.");
     const a = (R.agents || []).find(x => x.id === agentId), own = R.cur.agent && R.cur.agent.id === agentId;
     if (!own && !confirm(`Test on ${a ? a.name : "that agent"}? Its Sarvam draft holds this version during the test and is put back afterwards. Nothing is committed.`)) return;
-    const r = await api("POST", `/prompts/${R.curId}/tests/sarvam`, { versionId: el.dataset.vid, agentId, script: R.svtScript });
+    const r = await api("POST", `/prompts/${R.curId}/tests/sarvam`, { versionId: el.dataset.vid, agentId, script: R.svtScript, values: R.svtValues });
     await reloadCur(); const s = document.getElementById("svtPanel"); if (s) s.scrollIntoView({ block: "start" });
     toast(r.kind === "script" ? "Conversation run on Sarvam." : `${r.passed} of ${r.total} passed on Sarvam.${r.restore && r.restore.ok === false ? " Check the Sarvam draft." : ""}`);
   }, "Running on Sarvam…"),

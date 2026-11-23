@@ -168,7 +168,9 @@ r.post('/prompts/:id/tests/sarvam', h(async (req, res) => {
     : (tests.length ? tests : SMOKE[type] || SMOKE.collections).map(x => ({ testId: x.id || null, title: x.title, expect: x.expect, avoid: x.avoid, customer: [...(x.start || opener), ...x.customer] }));
   const judge = body.judge !== false && llm.available().length > 0;
   const today = new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' });
-  const result = await sarvamTest.onDraft({ appId: agent.sarvamAppId, text, greeting }, async dv => {
+  // Test values: {name: value}, or "name = value" lines.
+  const values = body.values && typeof body.values === 'object' ? body.values : Object.fromEntries(String(body.values || '').split('\n').map(l => l.split('=')).filter(x => x.length >= 2).map(([k, ...v]) => [k.replace(/[{}\s]/g, ''), v.join('=').trim()]).filter(([k, v]) => k && v));
+  const result = await sarvamTest.onDraft({ appId: agent.sarvamAppId, text, greeting, values }, async dv => {
     const out = [];
     for (let i = 0; i < convs.length; i += 2) {
       out.push(...await Promise.all(convs.slice(i, i + 2).map(async c => {
@@ -185,7 +187,7 @@ r.post('/prompts/:id/tests/sarvam', h(async (req, res) => {
     return { conversations: out };
   });
   const passed = result.conversations.filter(c => c.pass === true).length, failed = result.conversations.filter(c => c.pass === false).length;
-  const run = { at: now(), by: req.user.email, v: v.v, rev: v.rev || 0, agent: { id: agent.id, name: agent.name }, draftVersion: result.draftVersion, restore: result.restore, missingVariables: result.missingVariables,
+  const run = { at: now(), by: req.user.email, v: v.v, rev: v.rev || 0, agent: { id: agent.id, name: agent.name }, draftVersion: result.draftVersion, restore: result.restore, missingVariables: result.missingVariables, valuesUsed: result.valuesUsed, valuesSkipped: result.valuesSkipped,
     kind: typed.length ? 'script' : tests.length ? 'tests' : 'smoke', passed, failed, total: result.conversations.length, conversations: result.conversations };
   await db.put('versions', { ...(await db.get('versions', v.id)), sarvamTest: run });
   await audit(req.user, 'tests.sarvam', { prompt: p.id, v: v.v, agent: agent.id, passed, failed, total: run.total });

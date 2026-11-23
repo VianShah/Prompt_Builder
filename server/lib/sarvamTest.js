@@ -48,7 +48,7 @@ async function chat(appId, appVersion, lines) {
 }
 
 // Write the version into the agent's draft, run fn(draftVersion), then put the draft back.
-async function onDraft({ appId, text, greeting }, fn) {
+async function onDraft({ appId, text, greeting, values }, fn) {
   const committed = await sarvam.committedVersions(appId);
   const newest = committed[committed.length - 1] || null;
   const [before, top, info] = await Promise.all([sarvam.promptText(appId, null), newest ? sarvam.promptText(appId, newest) : Promise.resolve({ text: '', hash: '' }), draftInfo(appId)]);
@@ -65,8 +65,14 @@ async function onDraft({ appId, text, greeting }, fn) {
       const got = await sarvam.promptText(appId, null);
       if (flat(got.text) !== flat(text)) throw err('Sarvam did not take the whole prompt into the draft, so the test did not run.', 'sarvam_edit', 409);
     }
-    const dv = (await draftInfo(appId)).draftVersion;
-    out = { ...(await fn(dv || null)), draftVersion: dv, missingVariables: [...new Set((`${text} ${greeting || ''}`.match(/\{\{\s*(\w+)\s*\}\}/g) || []).map(x => x.replace(/[{}\s]/g, '')))].filter(v => !info.variables.includes(v)) };
+    // Test values: the chat can't take call variables, so the variables this test added get a default
+    // value for the run. The agent's own variables are never changed; they're deleted again at restore.
+    const now = await draftInfo(appId), added = now.variables.filter(x => !info.variables.includes(x));
+    const want = Object.entries(values || {}).filter(([k, v]) => /^[a-z_][a-z0-9_]{0,60}$/i.test(k) && String(v).trim());
+    const usable = want.filter(([k]) => added.includes(k)), skipped = want.filter(([k]) => !added.includes(k)).map(([k]) => k);
+    if (usable.length) await writeDraft(appId, [], { config: { llm_config: { agent_config: { agent_variables: Object.fromEntries(usable.map(([k, v]) => [k, { value: String(v).slice(0, 500) }])) } } } });
+    const dv = now.draftVersion;
+    out = { ...(await fn(dv || null)), draftVersion: dv, valuesUsed: Object.fromEntries(usable), valuesSkipped: skipped, missingVariables: [...new Set((`${text} ${greeting || ''}`.match(/\{\{\s*(\w+)\s*\}\}/g) || []).map(x => x.replace(/[{}\s]/g, '')))].filter(v => !info.variables.includes(v)) };
     return out;
   } finally {
     if (wrote) {
