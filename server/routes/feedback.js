@@ -129,6 +129,69 @@ r.post('/prompts/:id/tests/run', h(async (req, res) => {
   res.json({ v: v.v, passed, failed, errors: results.length - passed - failed });
 }));
 
+// Run conversations on Sarvam's own runtime (text chat, no phone call). The version is written into
+// the chosen agent's Sarvam draft for the test and put back afterwards; nothing is committed.
+// Runs the regression tests (or a short smoke test when there are none), or a script typed by hand.
+const sarvamTest = require('../lib/sarvamTest');
+const llm = require('../lib/llm');
+const SMOKE = {
+  collections: [
+    { title: 'Salary late, promises a date', customer: ['Abhi paise nahi hain, salary paanch tareekh ko aayegi.', 'Theek hai, paanch ko kar dunga.'], expect: 'Acknowledges calmly, fixes a specific payment date, confirms it, and stays polite with no threats.', avoid: 'Threats, pressure wording, or asking for the payment twice in a pushy way.' },
+    { title: 'Someone else answers', customer: ['Main unka bhai bol raha hoon, woh abhi ghar par nahi hain.'], start: ['Hello'], expect: 'Does not mention the loan, EMI or any amount; asks when the borrower can be reached.', avoid: 'Disclosing the debt or any amount to a third party.' },
+  ],
+  sales: [
+    { title: 'Asks about fees, then busy', customer: ['Annual fee kitni hai?', 'Abhi time nahi hai, baad mein baat karte hain.'], expect: 'Answers only from its knowledge or says it will share details, then offers a callback at a time the customer chooses.', avoid: 'Inventing a fee or pressuring the customer.' },
+  ],
+};
+r.post('/prompts/:id/tests/sarvam', h(async (req, res) => {
+  if (!can(req.user, 'edit')) throw fail(403, 'Your role cannot run tests on Sarvam.');
+  const p = await getPrompt(req.params.id);
+  if (!p) throw fail(404, 'Prompt not found.');
+  const body = req.body || {};
+  const versions = (await db.list('versions', x => x.promptId === p.id)).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  const live = versions.find(x => x.status === 'live');
+  const v = versions.find(x => x.id === body.versionId) || versions[versions.length - 1];
+  const st = await require('../lib/sarvam').status();
+  if (!st.hasToken || st.expired) throw fail(409, 'Connect Sarvam first: the test runs through the Sarvam sign-in.');
+  const agent = await db.get('agents', String(body.agentId || p.agentId || ''));
+  if (!agent || !agent.sarvamAppId) throw fail(400, 'Choose the Sarvam agent to test on.');
+  const type = p.agentType || 'collections';
+  if ((agent.agentType || 'collections') !== type) throw fail(400, `Test a ${type} prompt on a ${type} agent.`);
+  const t = pushLib.sarvamTextFor(live, v);
+  const text = t ? t.text : (v.sarvamText || core.toMarkdown(core.header(p.cfg, v.v), v.order, v.sections, false));
+  const greeting = v.greeting || ((v.sarvamMeta || (live && live.sarvamMeta) || {}).greeting) || '';
+  // What to run: a typed script as one conversation; else the regression tests; else a smoke test.
+  const typed = (Array.isArray(body.script) ? body.script : String(body.script || '').split('\n')).map(x => String(x).trim()).filter(Boolean).slice(0, 20);
+  const tests = typed.length ? [] : (await db.list('tests', x => x.promptId === p.id)).slice(0, 10);
+  const opener = ['Hello', 'Haan ji, main hi bol raha hoon.']; // tests start after identity is confirmed
+  const convs = typed.length ? [{ title: 'Your conversation', customer: typed, own: true }]
+    : (tests.length ? tests : SMOKE[type] || SMOKE.collections).map(x => ({ testId: x.id || null, title: x.title, expect: x.expect, avoid: x.avoid, customer: [...(x.start || opener), ...x.customer] }));
+  const judge = body.judge !== false && llm.available().length > 0;
+  const today = new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' });
+  const result = await sarvamTest.onDraft({ appId: agent.sarvamAppId, text, greeting }, async dv => {
+    const out = [];
+    for (let i = 0; i < convs.length; i += 2) {
+      out.push(...await Promise.all(convs.slice(i, i + 2).map(async c => {
+        const base = { testId: c.testId || null, title: c.title, expect: c.expect || '', avoid: c.avoid || '' };
+        try {
+          const turns = await sarvamTest.chat(agent.sarvamAppId, dv, c.customer);
+          if (!c.expect || !judge) return { ...base, turns, pass: null };
+          const transcript = turns.map(x => `${x.role === 'agent' ? 'Agent' : 'Customer'}: ${x.text}`).join('\n');
+          try { const j = await ai.judgeTranscript(c, transcript, today); return { ...base, turns, pass: !!(j.data && j.data.pass), why: String((j.data && j.data.why) || '') }; }
+          catch (e) { return { ...base, turns, pass: null, why: `Not judged: ${e.publicMessage || e.message}` }; }
+        } catch (e) { return { ...base, turns: [], pass: null, error: e.publicMessage || e.message }; }
+      })));
+    }
+    return { conversations: out };
+  });
+  const passed = result.conversations.filter(c => c.pass === true).length, failed = result.conversations.filter(c => c.pass === false).length;
+  const run = { at: now(), by: req.user.email, v: v.v, rev: v.rev || 0, agent: { id: agent.id, name: agent.name }, draftVersion: result.draftVersion, restore: result.restore, missingVariables: result.missingVariables,
+    kind: typed.length ? 'script' : tests.length ? 'tests' : 'smoke', passed, failed, total: result.conversations.length, conversations: result.conversations };
+  await db.put('versions', { ...(await db.get('versions', v.id)), sarvamTest: run });
+  await audit(req.user, 'tests.sarvam', { prompt: p.id, v: v.v, agent: agent.id, passed, failed, total: run.total });
+  res.json(run);
+}));
+
 // ---- A whole call transcript from UAT: what went wrong ----
 // Read against a chosen version of the prompt (default: the live one, which is what calls use).
 r.post('/prompts/:id/transcript/analyze', h(async (req, res) => {

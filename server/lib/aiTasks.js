@@ -537,6 +537,22 @@ Reply with only JSON: {"tests": [{"item": item number, "title": "short name", "c
   const r = await llm.json(req, { maxTokens: 8000 });
   return ((r.data && r.data.tests) || []).filter(t => t && Array.isArray(t.customer) && t.customer.length && t.expect).map(t => ({ item: Number(t.item), title: String(t.title || ''), customer: t.customer.map(String).slice(0, 6), expect: String(t.expect), avoid: String(t.avoid || '') }));
 }
+// Judge one conversation against a regression test: {pass, why}. Used for the simulation and for Sarvam runs.
+async function judgeTranscript(test, transcript, today) {
+  const judge = `A regression test for a ${K().agent}. Judge ONLY the agent's last reply (and the earlier ones if the test is about the sequence).
+Today in this simulation is ${today}. If the test was written for a different "today", shift its dates by the difference before judging (e.g. "tomorrow" means the day after ${today}; a halfway date is halfway between ${today} and the customer's date). Judge the behaviour, not wording or small rounding.`;
+  const judgeBody = `
+Must do: ${test.expect}
+Must not do: ${test.avoid || '(nothing specific)'}
+
+CONVERSATION:
+${transcript}
+
+Reply with only JSON: {"pass": true | false, "why": "one sentence"}`;
+  let j; try { j = await llm.json(judge + judgeBody, { maxTokens: 600 }); } catch (e) { j = await llm.json(judge + judgeBody, { maxTokens: 1000 }); } // one retry on a garbled reply
+  return j;
+}
+
 // Play one test against a prompt: the model acts as the agent (simulated, not Sarvam's own runtime),
 // then a separate read judges the reply against the test.
 async function runTest(text, greeting, test, today) {
@@ -559,17 +575,7 @@ Reply with only JSON: {"replies": ["reply to line 1", "reply to line 2", ...]}`;
   let s; try { s = await llm.json(sim, { maxTokens: 3000 }); } catch (e) { s = await llm.json(sim, { maxTokens: 4000 }); } // one retry on a garbled reply
   const replies = ((s.data && s.data.replies) || []).map(String);
   const transcript = test.customer.map((l, i) => `Customer: ${l}\nAgent: ${replies[i] || '(no reply)'}`).join('\n');
-  const judge = `A regression test for a ${K().agent}. Judge ONLY the agent's last reply (and the earlier ones if the test is about the sequence).
-Today in this simulation is ${today}. If the test was written for a different "today", shift its dates by the difference before judging (e.g. "tomorrow" means the day after ${today}; a halfway date is halfway between ${today} and the customer's date). Judge the behaviour, not wording or small rounding.`;
-  const judgeBody = `
-Must do: ${test.expect}
-Must not do: ${test.avoid || '(nothing specific)'}
-
-CONVERSATION:
-${transcript}
-
-Reply with only JSON: {"pass": true | false, "why": "one sentence"}`;
-  let j; try { j = await llm.json(judge + judgeBody, { maxTokens: 600 }); } catch (e) { j = await llm.json(judge + judgeBody, { maxTokens: 1000 }); } // one retry on a garbled reply
+  const j = await judgeTranscript(test, transcript, today);
   return { pass: !!(j.data && j.data.pass), why: String((j.data && j.data.why) || ''), replies, provider: s.provider };
 }
 
@@ -843,4 +849,4 @@ ${T}
   return { text: out, changes, provider: r.provider };
 }
 
-module.exports = { finalizePrompt, reviewCall, MISTAKE_CATS, CALL_TYPES, resplit, readImagesToText, reviewWithFixes, kbFromDocs, SKELETON, factoryMap, factoryAssemble, factoryReview, factoryRevise, diagnoseGroup, buildTests, runTest, optimizePrompt, applyEdits, analyzeTranscript, critiqueFix, mapFeedback, draftFix, review, kbDraft, importPrompt, diagnoseCall, compareSummary };
+module.exports = { judgeTranscript, finalizePrompt, reviewCall, MISTAKE_CATS, CALL_TYPES, resplit, readImagesToText, reviewWithFixes, kbFromDocs, SKELETON, factoryMap, factoryAssemble, factoryReview, factoryRevise, diagnoseGroup, buildTests, runTest, optimizePrompt, applyEdits, analyzeTranscript, critiqueFix, mapFeedback, draftFix, review, kbDraft, importPrompt, diagnoseCall, compareSummary };

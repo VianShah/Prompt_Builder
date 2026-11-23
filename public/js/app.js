@@ -689,6 +689,34 @@ function testsPanel(cur) {
       ${r ? `<div class="small" style="color:${r.pass ? "var(--ok)" : "var(--err)"}">${esc(r.why)}</div>${(r.replies || []).length ? `<details><summary class="small">What the agent said</summary><div class="excerpt">${x.customer.map((l, i) => `<div><b>Customer:</b> ${esc(l)}</div><div class="${i === x.customer.length - 1 ? "hit" : ""}"><b>Agent:</b> ${esc(r.replies[i] || "")}</div>`).join("")}</div></details>` : ""}` : `<div class="small muted">Not run on v${esc(latest.v)} yet.</div>`}</div>`; }).join("")}` : `<div class="small muted">No tests yet.${fixedWithout ? " Make them from the fixed feedback above." : " Fix some feedback first; each fix becomes a test."}</div>`}
   </div>`;
 }
+// Test on Sarvam's own runtime, over text: the version goes into an agent's Sarvam draft for the
+// test and is put back afterwards. Nothing is committed and no call is placed.
+function sarvamTestPanel(cur) {
+  const latest = latestOf(cur), p = cur.prompt, type = p.agentType || "collections";
+  const agents = (R.agents || []).filter(a => a.sarvamAppId && (a.agentType || "collections") === type);
+  const own = cur.agent && cur.agent.id, uat = cur.agent && cur.agent.uatAgentId;
+  const pick = R.svtAgent && agents.some(a => a.id === R.svtAgent) ? R.svtAgent : uat || own || "";
+  const T = latest.sarvamTest && latest.sarvamTest.v === latest.v && (latest.sarvamTest.rev || 0) === (latest.rev || 0) ? latest.sarvamTest : null;
+  const sOn = R.sarvam && R.sarvam.hasToken && !R.sarvam.expired;
+  const nTests = (R.tests || []).length;
+  const turnsHtml = c => `<div class="excerpt">${c.turns.map(t => `<div${t.role === "agent" ? ' class="hit"' : ""}><b>${t.role === "agent" ? "Agent" : "Customer"}:</b> ${esc(t.text || "(no reply)")}</div>`).join("")}</div>`;
+  return `<div class="panel stack" style="margin-top:16px" id="svtPanel">
+   <div><h2>Test on Sarvam</h2><p class="small muted">Runs ${nTests ? `the ${nTests} regression test${nTests === 1 ? "" : "s"}` : "a short smoke test"}, or a conversation you type, as text chats on Sarvam's own runtime with v${esc(latest.v)}. The version is written into the chosen agent's Sarvam draft for the test and put back afterwards: nothing is committed, no call is placed, and live calls keep running the committed version. The chat uses the agent's default variable values.</p></div>
+   ${!sOn ? `<div class="small" style="color:var(--warn)">Connect Sarvam on the Agents page first.</div>` : ""}
+   <div class="fgrid"><label class="f">Agent to test on<select id="svt-agent" data-act-change="svt-agent"><option value="">Choose…</option>${agents.map(a => `<option value="${esc(a.id)}" ${a.id === pick ? "selected" : ""}>${esc(a.name)}${a.id === own ? " (this agent)" : a.id === uat ? " (UAT)" : ""}</option>`).join("")}</select></label>
+    <label class="f">Your own conversation <span class="hint">(optional: one customer line per line, from the first hello)</span><textarea id="svt-script" rows="3" placeholder="Hello&#10;Haan ji, main hi bol raha hoon&#10;Abhi paise nahi hain">${esc(R.svtScript || "")}</textarea></label></div>
+   <div class="row" style="gap:8px"><button class="btn sm primary" data-act="svt-run" data-vid="${latest.id}" ${sOn && canDo("edit") ? "" : "disabled"}>Run on Sarvam</button><span class="small muted">About ${nTests ? Math.max(1, Math.round(nTests * 0.3)) : 1} minute. ${aiOn() ? "Each test is then judged against what it must and must not do." : "No AI model, so results are shown without a verdict."}</span></div>
+   ${T ? `<div class="stack" style="gap:8px;border-top:1px solid var(--line);padding-top:12px">
+     <div class="row" style="gap:8px;flex-wrap:wrap"><b class="small">On ${esc(T.agent.name)}${T.draftVersion ? ` · Sarvam draft v${esc(T.draftVersion)}` : ""}</b>${T.total && T.kind !== "script" ? `<span class="chip ${T.failed ? "err" : T.passed === T.total ? "ok" : ""}">${T.passed} of ${T.total} passed</span>` : ""}<span class="small muted">${esc(fmtDate(T.at))} · ${esc((T.by || "").split("@")[0])}</span></div>
+     <div class="small" style="color:${T.restore && T.restore.ok === false ? "var(--err)" : "var(--muted)"}">${esc((T.restore && T.restore.note) || "")}</div>
+     ${(T.missingVariables || []).length ? `<div class="small" style="color:var(--warn)">This agent has no ${T.missingVariables.map(v => `{{${esc(v)}}}`).join(", ")}: those parts of the prompt ran without a value. Add them to the Sarvam agent before going live.</div>` : ""}
+     ${T.conversations.map(c => `<div class="fb" style="gap:6px;border-left:4px solid ${c.pass ? "var(--ok)" : c.pass === false ? "var(--err)" : "var(--line)"}">
+       <b class="small">${c.pass ? "✓ " : c.pass === false ? "✗ " : ""}${esc(c.title)}</b>
+       ${c.error ? `<div class="small" style="color:var(--err)">${esc(c.error)}</div>` : ""}
+       ${c.why ? `<div class="small" style="color:${c.pass ? "var(--ok)" : c.pass === false ? "var(--err)" : "var(--muted)"}">${esc(c.why)}</div>` : ""}
+       ${c.turns && c.turns.length ? (c.pass === true ? `<details><summary class="small">The conversation</summary>${turnsHtml(c)}</details>` : turnsHtml(c)) : ""}</div>`).join("")}</div>` : ""}
+  </div>`;
+}
 // Fixes that went live once but are missing from the live prompt (e.g. undone by a later push).
 async function loadLost() {
   const pid = R.curId; if (!pid) return;
@@ -1135,6 +1163,7 @@ function changesTab(cur) {
    </div>
   </div>
   ${testsPanel(cur)}
+  ${sarvamTestPanel(cur)}
   ${fbHistory(items)}
   ${(() => { const sel = [...(R.fbSel || [])].filter(id => items.some(i => i.id === id && i.status === "mapped")); return sel.length ? `<div class="batchbar"><b>${sel.length} selected</b><span class="small muted" style="flex:1;min-width:200px">The AI drafts each fix on top of the previous one, then ${openDraft(latest) ? `adds them to draft v${esc(latest.v)}` : `saves v${esc(bumpV(latest.v))} as a draft`} for you to review.</span><button class="btn sm ghost" data-act="fb-selnone">Clear</button><button class="btn primary ai" data-act="fb-batch" ${aiOn() ? "" : "disabled"}>Fix ${sel.length} in one new version</button></div>` : ""; })()}`;
 }
@@ -1848,6 +1877,15 @@ const ACT = {
     toast(`${r.updated ? "Added to" : "Saved as"} draft v${r.v} on ${r.agent} (${fmtN(r.charsBefore)} → ${fmtN(r.charsAfter)} characters). Open the agent to review and send it for approval. No other agent changed.`);
   }, "Saving the draft…"),
   "mod-tests": el => run(el, async () => { const U = R.modUse; await api("POST", `/modules/${R.modId}/tests/run`, { agentId: U.agentId }); await loadMod(R.modId); render(); }, "Running tests (about a minute)…"),
+  "svt-run": el => run(el, async () => {
+    const agentId = ($("#svt-agent") || {}).value; R.svtScript = ($("#svt-script") || {}).value || "";
+    if (!agentId) throw new Error("Choose the agent to test on.");
+    const a = (R.agents || []).find(x => x.id === agentId), own = R.cur.agent && R.cur.agent.id === agentId;
+    if (!own && !confirm(`Test on ${a ? a.name : "that agent"}? Its Sarvam draft holds this version during the test and is put back afterwards. Nothing is committed.`)) return;
+    const r = await api("POST", `/prompts/${R.curId}/tests/sarvam`, { versionId: el.dataset.vid, agentId, script: R.svtScript });
+    await reloadCur(); const s = document.getElementById("svtPanel"); if (s) s.scrollIntoView({ block: "start" });
+    toast(r.kind === "script" ? "Conversation run on Sarvam." : `${r.passed} of ${r.total} passed on Sarvam.${r.restore && r.restore.ok === false ? " Check the Sarvam draft." : ""}`);
+  }, "Running on Sarvam…"),
   "tests-build": el => run(el, async () => { const r = await api("POST", `/prompts/${R.curId}/tests/build`); await reloadCur(); toast(`${r.added} test${r.added === 1 ? "" : "s"} made. Run them on the draft before pushing.`); }, "Writing tests…"),
   "tests-run": el => run(el, async () => { const r = await api("POST", `/prompts/${R.curId}/tests/run`, { versionId: el.dataset.vid }); await reloadCur(); toast(`v${r.v}: ${r.passed} passed, ${r.failed} failed${r.errors ? `, ${r.errors} couldn't run` : ""}.`); }, "Running tests (about a minute)…"),
   "test-del": el => { if (!confirm("Delete this test?")) return; run(el, async () => { await api("DELETE", `/tests/${el.dataset.id}`); await reloadCur(); }); },
@@ -2136,6 +2174,7 @@ document.addEventListener("change", e => {
   if (el.dataset.tx === "versionId" && R.tx) R.tx.versionId = el.value;
   if (el.id === "txFile" && el.files[0]) readTranscript(el.files[0]);
   if (c === "chk") { const it = item(el.dataset.id), s = chkSel(it), i = Number(el.dataset.i); el.checked ? s.add(i) : s.delete(i); render(); }
+  if (el.dataset.actChange === "svt-agent") { R.svtAgent = el.value; R.svtScript = ($("#svt-script") || {}).value || ""; return; }
   if (el.dataset.actChange === "scope") { api("PATCH", `/feedback/${el.dataset.id}`, { scope: el.value }).then(reloadCur).then(() => toast(el.value === "shared" ? "This fix is now for every agent: it's logged as a shared fix when applied." : "This fix is for this agent only.")).catch(err => toast(err.message)); }
   if (c === "fbsel") { R.fbSel = R.fbSel || new Set(); el.checked ? R.fbSel.add(el.dataset.id) : R.fbSel.delete(el.dataset.id); render(); }
   if (el.dataset.cfg && R.acfg && R.acfg.edit && (el.type === "checkbox" || el.tagName === "SELECT")) { setPath(R.acfg.edit, el.dataset.cfg, el.type === "checkbox" ? el.checked : el.value); render(); }
