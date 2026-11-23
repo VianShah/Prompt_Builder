@@ -61,10 +61,16 @@ const BUILTIN_HINTS = {
   opening: ['opening', 'greeting', 'introduction', 'start'], flows: ['flow', 'conversation', 'objective', 'payment', 'collection', 'steps'], objections: ['objection', 'special case', 'edge case', 'handling'],
   kb: ['knowledge', 'product', 'faq', 'facts'], dates: ['date', 'time', 'calendar'], language: ['language'], hygiene: ['hygiene', 'silence', 'interruption', 'conversation rules'], closing: ['closing', 'disposition', 'end', 'wrap'],
 };
+// Hints are tried in order, so "flow" finds Conversation flow before "objective" finds Objective.
+// Platform blocks (speech, language, hygiene, dates) with no section of their own go to the rules section.
+const BUILTIN_FALLBACK = { speech: 'rules', language: 'rules', hygiene: 'rules', dates: 'rules', inputs: 'environment' };
 function builtinSection(sk, builderSec) {
   const hints = BUILTIN_HINTS[builderSec] || [builderSec];
-  const hit = sk.sections.find(s => hints.some(k => norm([s.title, s.id, ...(s.aliases || [])].join(' ')).includes(k)));
-  return (hit || (builderSec === 'kb' && sk.sections.find(s => s.kb)) || sk.sections[0]).id;
+  const text = s => norm([s.title, s.id, ...(s.aliases || [])].join(' '));
+  for (const k of hints) { const hit = sk.sections.find(s => text(s).includes(k)); if (hit) return hit.id; }
+  const fb = BUILTIN_FALLBACK[builderSec] && (BUILTIN_HINTS[BUILTIN_FALLBACK[builderSec]] || [BUILTIN_FALLBACK[builderSec]]);
+  const fbHit = fb && sk.sections.find(s => fb.some(k => text(s).includes(k)));
+  return (fbHit || (builderSec === 'kb' && sk.sections.find(s => s.kb)) || sk.sections[0]).id;
 }
 // A wizard-style config from the new agent's details, so built-in blocks read with this client's values.
 function cfgFrom(info) {
@@ -75,11 +81,13 @@ function cfgFrom(info) {
   if (i.bucket && PB.BUCKETS.some(b => b.id === i.bucket)) c.bucket = i.bucket;
   return c;
 }
+// Built-in blocks write call variables as {name}; Sarvam fills only {{name}}, so New prompt uses that form.
+const sarvamVars = t => String(t).replace(/(?<!\{)\{([a-z_][a-z0-9_]*)\}(?!\})/g, '{{$1}}');
 function builtinsFor(type, sk, info) {
   if (type !== 'collections' || !sk) return [];
   const c = cfgFrom(info);
   return PB.BLOCKS.filter(b => b.when(c) && b.id !== 'VAR-SCHEMA' && b.id !== 'KB-CLIENT').map(b => ({
-    ref: `B:${b.id}`, builtin: true, id: b.id, title: b.t, section: builtinSection(sk, b.sec), layer: b.layer, locked: b.edit === 'locked', src: b.src, text: String(b.text(c)).trim(),
+    ref: `B:${b.id}`, builtin: true, id: b.id, title: b.t, section: builtinSection(sk, b.sec), layer: b.layer, locked: b.edit === 'locked', src: b.src, text: sarvamVars(String(b.text(c)).trim()),
   }));
 }
 const entryView = m => ({ ref: `M:${m.id}`, id: m.id, moduleId: m.moduleId, v: m.v, title: m.title, purpose: m.purpose || '', section: m.section || null, status: m.status, origin: m.origin || 'extracted',

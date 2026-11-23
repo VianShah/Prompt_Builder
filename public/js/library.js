@@ -27,7 +27,9 @@ function npCfg(info) {
   if (info.bucket) c.bucket = info.bucket;
   return c;
 }
-function builtinText(b, info) { const blk = blockById(b.id); try { return blk ? String(blk.text(npCfg(info))).trim() : b.text; } catch (_) { return b.text; } }
+// Built-in blocks write call variables as {name}; Sarvam fills only {{name}}, so New prompt uses that form.
+const sarvamVars = t => String(t).replace(/(?<!\{)\{([a-z_][a-z0-9_]*)\}(?!\})/g, "{{$1}}");
+function builtinText(b, info) { const blk = blockById(b.id); try { return sarvamVars(blk ? String(blk.text(npCfg(info))).trim() : b.text); } catch (_) { return sarvamVars(b.text); } }
 // Library entries for one section: modules of this type + built-ins (collections).
 function sectionEntries(type, secId, info) {
   const lib = libOf(type); if (!lib) return [];
