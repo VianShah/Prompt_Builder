@@ -27,8 +27,6 @@ services:
         generateValue: true
       - key: BUILDER_USERS
         sync: false
-        sync: false
-        sync: false
       # Claude Sonnet 5.5 on Bedrock is the main model; GLM and Gemini are fallbacks.
       - key: AWS_BEARER_TOKEN_BEDROCK
         sync: false

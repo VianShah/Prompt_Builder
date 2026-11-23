@@ -1028,6 +1028,12 @@ function wireAudio(prev) {
   const slot = $("#callAudio");
   if (!slot) return;
   if (prev && prev.dataset.src === slot.dataset.src) { slot.replaceWith(prev); return; }
+  slot.addEventListener("error", async () => {
+    let why = "The recording couldn't be loaded.";
+    try { const r = await fetch(slot.dataset.src, { headers: { Range: "bytes=0-0" } }); if (!r.ok) { const j = await r.json().catch(() => ({})); why = j.error || `The server answered HTTP ${r.status}.`; } } catch (e) { why = `The server couldn't be reached: ${e.message}`; }
+    const note = document.createElement("div"); note.className = "small"; note.style.color = "var(--err)"; note.id = "callAudioErr";
+    note.textContent = why; const old = $("#callAudioErr"); if (old) old.remove(); slot.after(note);
+  });
   slot.addEventListener("timeupdate", () => {
     const t = slot.currentTime;
     $$(".turn").forEach(el => { const s = parseFloat(el.dataset.start), e = parseFloat(el.dataset.end); el.classList.toggle("playing", !isNaN(s) && t >= s && t < (isNaN(e) ? s + 4 : e)); });

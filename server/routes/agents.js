@@ -1,4 +1,5 @@
 const express = require('express');
+const config = require('../config');
 const db = require('../db');
 const ai = require('../lib/aiTasks');
 const sarvam = require('../lib/sarvam');
@@ -333,7 +334,10 @@ r.get('/agents/:id/interactions/audio', h(async (req, res) => {
   const file = path.join(REC_DIR, crypto.createHash('sha1').update(a.sarvamAppId + '|' + iid).digest('hex') + '.wav');
   if (!fs.existsSync(file)) {
     if (!recPending.has(file)) recPending.set(file, (async () => {
-      if (!sarvamRest.enabled()) throw fail(502, 'No way to fetch the recording: set SARVAM_API_KEY in the environment.');
+      if (!sarvamRest.enabled()) {
+        const missing = [['SARVAM_API_KEY', config.sarvam.apiKey], ['SARVAM_ORG_ID', config.sarvam.orgId], ['SARVAM_WORKSPACE_ID', config.sarvam.workspaceId]].filter(([, v]) => !v).map(([k]) => k);
+        throw fail(502, `Recordings need ${missing.join(', ')} in the server's environment settings (on Render: the service's Environment page). Calls and transcripts work without ${missing.length === 1 ? 'it' : 'them'}; the audio doesn't.`);
+      }
       const rec = await sarvamRest.recording(a.sarvamAppId, iid);
       fs.mkdirSync(REC_DIR, { recursive: true });
       fs.writeFileSync(file + '.part', rec.data); fs.renameSync(file + '.part', file);
