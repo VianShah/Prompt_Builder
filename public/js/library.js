@@ -15,7 +15,7 @@ const npRid = () => Math.random().toString(36).slice(2, 10);
 
 // ---------- New prompt state ----------
 function npState() {
-  if (!L.np) L.np = { step: 0, info: { type: "collections", client: "", legal: "", agentName: "", gender: "female", product: "", productDesc: "", objective: "", languages: ["Hindi", "English"], callingAs: "lender", bucket: "b1" }, source: { kind: "blank", agentId: "" }, greeting: "", secs: {}, name: "" };
+  if (!L.np) L.np = { step: 0, info: { type: "collections", client: "", legal: "", agentName: "", gender: "female", product: "", productDesc: "", objective: "", languages: ["Hindi", "English"], callingAs: "lender", bucket: "b1", levers: [...DEFAULT_LEVERS] }, source: { kind: "blank", agentId: "" }, greeting: "", secs: {}, name: "" };
   return L.np;
 }
 // Built-in block text with this agent's details (client name, product, persona...).
@@ -25,6 +25,8 @@ function npCfg(info) {
   if (PRODUCTS.includes(info.product)) c.client.product = info.product;
   if ((info.languages || []).length) c.client.languages = info.languages.filter(l => LANGS.includes(l));
   if (info.bucket) c.bucket = info.bucket;
+  if (Array.isArray(info.levers)) c.policy.levers = info.levers.filter(l => leverById(l));
+  c.persona = personaById(info.persona) ? info.persona : personaForBucket(c.bucket);
   return c;
 }
 // Built-in blocks write call variables as {name}; Sarvam fills only {{name}}, so New prompt uses that form.
@@ -33,7 +35,8 @@ function builtinText(b, info) { const blk = blockById(b.id); try { return sarvam
 // Library entries for one section: modules of this type + built-ins (collections).
 function sectionEntries(type, secId, info) {
   const lib = libOf(type); if (!lib) return [];
-  const mods = lib.entries.filter(e => e.section === secId && e.rules.length).map(e => ({ ...e, text: e.rules.map(r => r.text).join("\n\n") }));
+  const b = (info && info.bucket) || "b1";
+  const mods = lib.entries.filter(e => e.section === secId && e.rules.length).map(e => (e.byBucket || {})[b] ? { ...e, text: e.byBucket[b], forBucket: b } : { ...e, text: e.rules.map(r => r.text).join("\n\n") });
   const bis = lib.builtins.filter(b => b.section === secId).map(b => ({ ...b, status: "approved", agents: [], text: builtinText(b, info) }));
   return [...mods.sort((a, b) => (b.status === "approved") - (a.status === "approved") || b.agents.length - a.agents.length), ...bis];
 }
@@ -96,6 +99,13 @@ function viewNewPrompt() {
 }
 const npField = (label, k, val, hint = "", ph = "") => `<label class="f">${label}${hint ? ` <span class="hint">${hint}</span>` : ""}<input type="text" data-np="info.${k}" id="np-${k}" value="${esc(val || "")}" placeholder="${esc(ph)}"></label>`;
 const npSeg = (k, opts, val) => `<div class="seg" role="group">${opts.map(([v, l]) => `<button type="button" data-act="np-set" data-k="${k}" data-v="${esc(v)}" aria-pressed="${val === v}">${esc(l)}</button>`).join("")}</div>`;
+// Collections: the DPD bucket sets how firm the agent is; levers are the consequences it may use.
+function npBucketLevers(i) {
+  const b = i.bucket || "b1", heat = bucketHeat(b), lv = Array.isArray(i.levers) ? i.levers : DEFAULT_LEVERS;
+  return `<div class="fgrid"><label class="f">Bucket <span class="hint">(firmer wording as the bucket gets later)</span><select data-np="info.bucket" id="np-bucket">${BUCKETS.filter(x => !x.legacy).map(x => `<option value="${x.id}" ${x.id === b ? "selected" : ""}>${esc(x.t)}</option>`).join("")}</select></label>
+    <div class="small muted" style="align-self:end">Persona for this bucket: <b>${esc(personaById(personaForBucket(b)).t)}</b> · ${esc(personaById(personaForBucket(b)).d)}</div></div>
+   <div><div class="lbl">Pressure the agent may use <span class="hint">(tick only what is true for this lender; each comes in from the bucket shown)</span></div><div class="row" style="gap:6px;flex-wrap:wrap">${LEVERS.map(l => { const at = BUCKETS.find(x => !x.legacy && x.heat >= l.from); return `<button type="button" class="btn sm" data-act="np-lever" data-l="${l.id}" aria-pressed="${lv.includes(l.id)}" title="${esc(l.stick)}">${esc(l.t)}${l.from > heat ? ` <span class="muted">· from ${esc(at.short)}</span>` : ""}</button>`; }).join("")}</div></div>`;
+}
 function npClient(np, lib) {
   const i = np.info;
   return `<div class="stack">
@@ -105,6 +115,7 @@ function npClient(np, lib) {
    <div class="fgrid">${npField("Agent name", "agentName", i.agentName, "", "e.g. Meera")}${npField("Product", "product", i.product, "", i.type === "sales" ? "e.g. Platinum credit card" : "e.g. Personal loan")}</div>
    <label class="f">Objective <span class="hint">(what a successful call achieves)</span><textarea rows="3" data-np="info.objective" id="np-objective" placeholder="${i.type === "sales" ? "e.g. Explain the card's benefits to pre-approved customers and get consent to start the application." : "e.g. Get a promise to pay with a date from customers 1–30 days overdue."}">${esc(i.objective)}</textarea></label>
    <label class="f">Anything else the rules should know <span class="hint">(policy, tone, what's not allowed)</span><textarea rows="2" data-np="info.productDesc" id="np-desc">${esc(i.productDesc)}</textarea></label>
+   ${i.type === "collections" ? npBucketLevers(i) : ""}
    ${trow("Agent voice", "Sets gendered verb forms (bol rahi / bol raha).", npSeg("gender", [["female", "Female"], ["male", "Male"]], i.gender))}
    <div><div class="lbl">Languages</div><div class="row" style="gap:6px">${LANGS.map(l => `<button type="button" class="btn sm" data-act="np-lang" data-l="${l}" aria-pressed="${(i.languages || []).includes(l)}">${l}</button>`).join("")}</div></div>
    ${lib && lib.skeleton && lib.skeleton.starter ? `<div class="small muted">There's no ${npTypeT(i.type).toLowerCase()} library yet, so this prompt starts from the standard ${npTypeT(i.type).toLowerCase()} structure and you write or draft its rules. Once the agent is live, its rules go into the library for the next one.</div>` : ""}
@@ -159,7 +170,7 @@ function npBrowser(np, sec) {
   return `<div class="np-lib"><div class="row" style="gap:8px;justify-content:space-between"><b class="small">Library · ${esc(sec.title)}</b><input type="text" id="np-q" data-np-q placeholder="Search" value="${esc(R.npQ || "")}" style="max-width:220px"><a href="#" class="small" data-act="np-lib-x">Close</a></div>
    ${list.length ? list.map(e => { const open = R.npOpen === e.ref; return `<div class="np-entry ${open ? "open" : ""}">
      <div class="row" style="gap:8px;align-items:flex-start"><a href="#" class="np-et" data-act="np-open" data-ref="${esc(e.ref)}">${esc(e.title)}</a>
-      <span class="small muted" style="flex:1">${e.builtin ? "built-in" : e.agents.length ? `used by ${e.agents.slice(0, 3).map(esc).join(", ")}${e.agents.length > 3 ? ` +${e.agents.length - 3}` : ""}` : e.variantOf ? "refined variant" : ""}${!e.builtin && e.status !== "approved" ? ` · <span style="color:var(--warn)">draft</span>` : ""}</span>
+      <span class="small muted" style="flex:1">${e.forBucket ? `<span class="chip acc">${esc((BUCKETS.find(x => x.id === e.forBucket) || {}).short || e.forBucket)} wording</span> ` : ""}${e.builtin ? "built-in" : e.agents.length ? `used by ${e.agents.slice(0, 3).map(esc).join(", ")}${e.agents.length > 3 ? ` +${e.agents.length - 3}` : ""}` : e.variantOf ? "refined variant" : ""}${!e.builtin && e.status !== "approved" ? ` · <span style="color:var(--warn)">draft</span>` : ""}</span>
       ${have.has(e.ref) ? `<span class="small muted">added</span>` : `<button class="btn sm" data-act="np-add" data-sec="${sec.id}" data-ref="${esc(e.ref)}">Add</button>`}</div>
      ${open ? `<div class="np-text small" style="margin-top:6px">${mdInline(e.text).replace(/\n/g, "<br>")}</div>${e.alternatives ? `<div class="small muted">${e.alternatives} other wording${e.alternatives === 1 ? "" : "s"} from other agents on the Library page.</div>` : ""}` : ""}</div>`; }).join("")
    : `<div class="small muted">Nothing in the library for this section${q ? " matches" : " yet"}.</div>`}</div>`;
@@ -229,13 +240,19 @@ function viewLibraryPage() {
      <div class="row" style="gap:8px">${withPrompt ? `<button class="btn ai" data-act="lib-extract" ${job && job.state === "running" ? "disabled" : ""}>${lib.entries.length ? "Update" : "Build"} from ${withPrompt} agent${withPrompt === 1 ? "" : "s"}</button>` : ""}<button class="btn ai" data-act="lib-docs-toggle">Add from documents</button></div></div>
      ${job && job.state === "running" ? `<div class="small">${esc(job.step || "Working")}… ${job.done} of ${job.total}</div><div class="bar" style="max-width:none;height:6px"><i style="width:${Math.round(100 * job.done / Math.max(1, job.total))}%"></i></div>` : job && job.state === "done" ? `<div class="small muted">Last build: ${job.read} agent${job.read === 1 ? "" : "s"} read, ${job.created} new entries, ${job.updated} updated${job.errors.length ? ` · <span style="color:var(--warn)">${job.errors.length} problem${job.errors.length === 1 ? "" : "s"}: ${esc(job.errors.slice(0, 2).join("; "))}</span>` : ""}.</div>` : job && job.state === "failed" ? `<div class="small" style="color:var(--err)">The build failed: ${esc(job.error || "")}</div>` : ""}
      ${sk.sections.map(s => { const es = lib.entries.filter(e => e.section === s.id), bs = lib.builtins.filter(b => b.section === s.id); return `<div class="lib-sec"><div class="np-sh"><h3>${esc(s.title)}</h3><span class="small muted">${es.length} entr${es.length === 1 ? "y" : "ies"}${bs.length ? ` · ${bs.length} built-in` : ""}</span></div>
-       ${es.map(e => `<a class="lib-row" href="#" data-act="lib-entry" data-id="${e.id}"><span class="t">${esc(e.title)}</span><span class="small muted">${e.variantOf ? "variant · " : ""}${e.agents.length ? `${e.agents.length} agent${e.agents.length === 1 ? "" : "s"}` : e.origin === "refined" ? "refined" : ""}${e.alternatives ? ` · ${e.alternatives} other wording${e.alternatives === 1 ? "" : "s"}` : ""}</span>${statusPill(e.status)}</a>`).join("") || `<div class="small muted">No entries yet.</div>`}</div>`; }).join("")}</section>` : "";
+       ${es.map(e => `<a class="lib-row" href="#" data-act="lib-entry" data-id="${e.id}"><span class="t">${esc(e.title)}</span><span class="small muted">${Object.keys(e.byBucket || {}).length ? `${Object.keys(e.byBucket).length} later-bucket wording${Object.keys(e.byBucket).length === 1 ? "" : "s"} · ` : e.bucketSame ? "same in every bucket · " : ""}${e.variantOf ? "variant · " : ""}${e.agents.length ? `${e.agents.length} agent${e.agents.length === 1 ? "" : "s"}` : e.origin === "refined" ? "refined" : ""}${e.alternatives ? ` · ${e.alternatives} other wording${e.alternatives === 1 ? "" : "s"}` : ""}</span>${statusPill(e.status)}</a>`).join("") || `<div class="small muted">No entries yet.</div>`}</div>`; }).join("")}</section>` : "";
   const docs = R.libDocs ? libDocsPanel(type, lib) : "";
+  const best = lib.agents.filter(a => a.bestPractice), withP = lib.agents.filter(a => a.hasPrompt);
+  const bestPanel = `<section class="np-sec" id="bestPanel"><div><h3>Best-practice agents</h3><p class="small muted">Tick the ${npTypeT(type).toLowerCase()} agents that work best${type === "collections" ? ", and the bucket each one works" : ""}. Extraction learns only from these${type === "collections" ? ", then writes firmer wording of each section for the later buckets" : ""}. ${best.length ? `${best.length} chosen.` : "None chosen yet: extraction would read every agent."}</p></div>
+    ${withP.length ? `<div class="stack" style="gap:6px">${withP.map(a => `<div class="row" style="gap:10px;justify-content:space-between"><label class="check" style="flex:1"><input type="checkbox" data-act-check="best" data-id="${esc(a.id)}" ${a.bestPractice ? "checked" : ""} ${canDo("approve") ? "" : "disabled"}> ${esc(a.name)} <span class="small muted">${esc(a.client || "")}</span></label>${type === "collections" ? `<select data-act-change="best-bucket" data-id="${esc(a.id)}" style="width:auto" ${canDo("approve") ? "" : "disabled"}>${BUCKETS.filter(x => !x.legacy).map(x => `<option value="${x.id}" ${x.id === (a.bucket || "b1") ? "selected" : ""}>${esc(x.short)}</option>`).join("")}</select>` : ""}</div>`).join("")}</div>
+     ${sk ? `<div class="row" style="gap:8px"><button class="btn primary ai" data-act="lib-extract" ${job && job.state === "running" ? "disabled" : ""}>Extract best practices from ${best.length || withP.length} agent${(best.length || withP.length) === 1 ? "" : "s"}</button>${type === "collections" && lib.entries.length ? `<button class="btn ai" data-act="lib-wording" ${job && job.state === "running" ? "disabled" : ""}>Write later-bucket wording</button>` : ""}</div>` : `<div class="small muted">Confirm the structure below first.</div>`}
+     ${job && job.state === "done" && job.wordingTotal != null ? `<div class="small muted">Later-bucket wording: ${job.worded} section${job.worded === 1 ? "" : "s"} written, ${job.wordingSame} read the same in every bucket.</div>` : ""}`
+    : `<div class="small muted">No ${npTypeT(type).toLowerCase()} agent has a prompt loaded yet. Connect Sarvam on the Agents page: prompts load by themselves.</div>`}</section>`;
   // agents and their type
   const others = (R.agents || []).filter(a => a.sarvamAppId);
   const agentsPanel = `<details class="np-sec"><summary><b>Agents and their type</b> <span class="small muted">· ${lib.agents.length} ${npTypeT(type).toLowerCase()}</span></summary><div class="stack" style="gap:6px;margin-top:10px">
     ${others.map(a => `<div class="row" style="justify-content:space-between"><span>${esc(a.name)} <span class="small muted">${esc(a.client || "")}</span></span>${canDo("approve") ? npSegAgent(a) : `<span class="small muted">${npTypeT(a.agentType || "collections")}</span>`}</div>`).join("") || `<div class="small muted">No agents loaded. Refresh on the Agents page.</div>`}</div></details>`;
-  return head + tabs + `<div class="stack">${skPanel}${docs}${fill}${agentsPanel}</div>`;
+  return head + tabs + `<div class="stack">${bestPanel}${skPanel}${docs}${fill}${agentsPanel}</div>`;
 }
 const npSegAgent = a => `<div class="seg">${NP_TYPES.map(([k, l]) => `<button type="button" data-act="agent-type" data-id="${esc(a.id)}" data-v="${k}" aria-pressed="${(a.agentType || "collections") === k}">${l}</button>`).join("")}</div>`;
 function skEditor(p) {
@@ -270,6 +287,9 @@ Object.assign(ACT, {
       loadLibType(v).then(() => { np.info.type = v; np.source = { kind: "blank", agentId: "" }; np.secs = {}; np.sourceAgent = null;
         if (v === "sales") { np.info.bucket = ""; np.info.callingAs = ""; } else { np.info.bucket = np.info.bucket || "b1"; np.info.callingAs = np.info.callingAs || "lender"; } commit(); }).catch(e => toast(e.message)); return; }
     np.info[k] = v; commit(); },
+  "np-lever": el => { const i = npState().info, l = el.dataset.l, cur = Array.isArray(i.levers) ? i.levers : [...DEFAULT_LEVERS]; i.levers = cur.includes(l) ? cur.filter(x => x !== l) : [...cur, l]; commit(); },
+  "best-toggle": el => run(el, async () => { await api("PATCH", `/agents/${el.dataset.id}`, { bestPractice: el.dataset.on === "1" }); await loadAgents(true); await loadLibType(R.libType || "collections", true); render(); }),
+  "lib-wording": el => run(el, async () => { const type = R.libType || "collections"; libOf(type).job = await api("POST", `/library/${type}/bucket-wording/start`); render(); pollLib(type); }),
   "np-lang": el => { const i = npState().info, l = el.dataset.l; i.languages = i.languages.includes(l) ? i.languages.filter(x => x !== l) : [...i.languages, l]; commit(); },
   "np-src": el => { npState().source.kind = el.dataset.k; commit(); },
   "np-go-review": el => run(el, async () => {

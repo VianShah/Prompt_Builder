@@ -14,6 +14,7 @@ const express = require('express');
 const db = require('../db');
 const PB = require('../../shared/blocks');
 const lt = require('../lib/libraryTasks');
+const examples = require('../lib/examples');
 const ai = require('../lib/aiTasks');
 const { agentText } = require('../lib/agentText');
 const { can } = require('../auth');
@@ -51,7 +52,7 @@ async function entriesOf(type) {
 // Agents of this type that have a prompt in the builder.
 async function agentsOf(type) {
   const [agents, prompts] = await Promise.all([db.list('agents'), db.list('prompts')]);
-  return agents.filter(a => agentTypeOf(a) === type).map(a => ({ id: a.id, name: a.name, client: a.client || '', hasPrompt: prompts.some(p => p.agentId === a.id) }));
+  return agents.filter(a => agentTypeOf(a) === type).map(a => ({ id: a.id, name: a.name, client: a.client || '', hasPrompt: prompts.some(p => p.agentId === a.id), bestPractice: !!a.bestPractice, bucket: a.bucket || 'b1' }));
 }
 
 // Built-in blocks (collections only), placed into the skeleton's sections by name.
@@ -79,6 +80,9 @@ function cfgFrom(info) {
   if (Array.isArray(i.languages) && i.languages.length) c.client.languages = i.languages.filter(l => PB.LANGS.includes(l));
   if (i.callingAs === 'agency') { c.client.callingAs = 'agency'; c.client.agency = i.agency || ''; }
   if (i.bucket && PB.BUCKETS.some(b => b.id === i.bucket)) c.bucket = i.bucket;
+  // Levers this agent may use, and a persona that gets firmer with the bucket.
+  if (Array.isArray(i.levers)) c.policy.levers = i.levers.filter(l => PB.leverById(l));
+  c.persona = PB.personaById(i.persona) ? i.persona : PB.personaForBucket(c.bucket);
   return c;
 }
 // Built-in blocks write call variables as {name}; Sarvam fills only {{name}}, so New prompt uses that form.
@@ -90,7 +94,7 @@ function builtinsFor(type, sk, info) {
     ref: `B:${b.id}`, builtin: true, id: b.id, title: b.t, section: builtinSection(sk, b.sec), layer: b.layer, locked: b.edit === 'locked', src: b.src, text: sarvamVars(String(b.text(c)).trim()),
   }));
 }
-const entryView = m => ({ ref: `M:${m.id}`, id: m.id, moduleId: m.moduleId, v: m.v, title: m.title, purpose: m.purpose || '', section: m.section || null, status: m.status, origin: m.origin || 'extracted',
+const entryView = m => ({ byBucket: m.byBucket || {}, fromBucket: m.fromBucket || null, bucketSame: !!m.bucketSame, ref: `M:${m.id}`, id: m.id, moduleId: m.moduleId, v: m.v, title: m.title, purpose: m.purpose || '', section: m.section || null, status: m.status, origin: m.origin || 'extracted',
   agents: (m.sourceAgents || []).map(a => a.name), variantOf: m.variantOf || null, alternatives: (m.alternatives || []).length, rules: (m.rules || []).map(x => ({ id: x.id, title: x.title, text: x.text })) });
 
 r.get('/library/:type', h(async (req, res) => {
@@ -135,7 +139,8 @@ async function saveGroup(type, sk, sec, g, members, user) {
   }
   let mid = `${type === 'sales' ? 'S' : 'C'}-${lt.slug(sec.id).toUpperCase()}-${lt.slug(g.title).toUpperCase()}`.slice(0, 60);
   for (let n = 2; (await db.list('modules', m => m.moduleId === mid)).length; n++) mid = `${mid.replace(/-\d+$/, '')}-${n}`;
-  await db.put('modules', { id: uid(), moduleId: mid, v: '1.0', status: 'draft', agentType: type, section: sec.id, title: g.title, purpose: g.purpose, topic: g.title, origin: 'extracted',
+  const fromBucket = (members.find(m => m.bucket) || {}).bucket || null;
+  await db.put('modules', { id: uid(), moduleId: mid, v: '1.0', status: 'draft', agentType: type, section: sec.id, title: g.title, purpose: g.purpose, topic: g.title, origin: 'extracted', fromBucket, bestPractice: members.some(m => m.best),
     rules: [{ id: 'R1', title: g.title, slot: sec.id, text: g.text }], requires: [...new Set((g.text.match(/\{\{\s*(\w+)\s*\}\}/g) || []).map(s => s.replace(/[{}\s]/g, '')))],
     params: [...new Set((g.text.match(/\[\[(\w+)\]\]/g) || []).map(s => s.slice(2, -2)))].map(p => ({ name: p, label: p.replace(/_/g, ' '), example: '' })),
     options: [], exits: [], policyDeps: [], tests: [], sourceAgents: agents, alternatives: members.filter(m => norm(m.text) !== norm(g.text)).map(m => ({ agent: m.agent, text: m.text })).slice(0, 12),
@@ -145,12 +150,19 @@ async function saveGroup(type, sk, sec, g, members, user) {
 async function runExtract(type, user) {
   const J = jobs[type];
   const sk = await skeletonOf(type);
-  const agents = (await agentsOf(type)).filter(a => a.hasPrompt);
-  J.total = agents.length + sk.sections.length; J.done = 0;
+  const all = (await agentsOf(type)).filter(a => a.hasPrompt), best = all.filter(a => a.bestPractice);
+  const agents = best.length ? best : all; J.from = best.length ? 'best' : 'all'; J.agents = agents.map(a => a.name);
+  J.total = agents.length + sk.sections.length + (type === 'collections' ? 1 : 0); J.done = 0;
   const pool = [];
   for (const a of agents) {
     J.step = `Reading ${a.name}`;
-    try { const t = await agentText(a.id); const out = await lt.extractRules({ skeleton: sk, agent: a.name, client: a.client, text: t.text }); out.rules.forEach(x => pool.push({ ...x, agent: a.name, agentId: a.id })); J.read++; }
+    try {
+      const t = await agentText(a.id); const out = await lt.extractRules({ skeleton: sk, agent: a.name, client: a.client, text: t.text });
+      // Safety net: whatever the AI left of this lender's names, links or numbers becomes a placeholder.
+      const names = examples.namesOf({ name: a.name, cfg: { client: { name: a.client || '' } } }, { name: a.name, client: a.client }, t.text);
+      const clean = txt => examples.anonymise(txt, names).replace(/\[client\]/g, '[[client_name]]').replace(/\[agent name\]/g, '[[agent_name]]');
+      out.rules.forEach(x => pool.push({ ...x, text: clean(x.text), agent: a.name, agentId: a.id, bucket: a.bucket || 'b1', best: !!a.bestPractice })); J.read++;
+    }
     catch (e) { J.errors.push(`${a.name}: ${e.publicMessage || e.message}`); }
     J.done++;
   }
@@ -163,9 +175,41 @@ async function runExtract(type, user) {
     }
     J.done++;
   }
+  if (type === 'collections') { J.step = 'Writing later-bucket wording'; await runBucketWording(type, J); J.done++; }
   J.state = 'done'; J.step = ''; J.finishedAt = now();
   await audit(user, 'library.extract', { type, agents: J.read, created: J.created, updated: J.updated, errors: J.errors.length });
 }
+// Later-bucket wording: every extracted entry that changes with the bucket gets a version for each bucket
+// after the one it came from. Entries that read the same in every bucket are marked and skipped next time.
+const SAME_IN_EVERY_BUCKET = /identity|rpc|compliance|non.?negotiable|speech|tts|language|pronunciation|environment|input|variable|knowledge|faq|hygiene|silence/i;
+async function runBucketWording(type, J) {
+  const live = PB.BUCKETS.filter(b => !b.legacy);
+  const levers = PB.LEVERS.map(l => ({ ...l, fromBucket: (live.find(b => b.heat >= l.from) || live[0]).short }));
+  const todo = (await entriesOf(type)).filter(m => m.origin === 'extracted' && !m.bucketSame && !Object.keys(m.byBucket || {}).length);
+  J.wordingTotal = todo.length; J.worded = 0; J.wordingSame = 0;
+  for (const m of todo) {
+    const from = live.find(b => b.id === (m.fromBucket || 'b1')) || live[1];
+    const rule = (m.rules && m.rules[0] && m.rules[0].text) || '';
+    if (!rule.trim()) continue;
+    if (SAME_IN_EVERY_BUCKET.test(`${m.section} ${m.title}`)) { await db.put('modules', { ...m, bucketSame: true }); J.wordingSame++; continue; }
+    J.step = `Writing later-bucket wording: ${m.title}`;
+    try {
+      const out = await lt.bucketWording({ title: m.title, section: m.section, text: rule, from, buckets: live.filter(b => b.heat > from.heat), levers });
+      await db.put('modules', { ...m, fromBucket: from.id, bucketSame: out.same, byBucket: out.byBucket, history: [...(m.history || []), { at: now(), by: 'library', action: out.same ? 'same in every bucket' : `wording for ${Object.keys(out.byBucket).length} later buckets` }] });
+      if (out.same) J.wordingSame++; else J.worded++;
+    } catch (e) { J.errors.push(`${m.title}: ${e.publicMessage || e.message}`); }
+  }
+}
+r.post('/library/:type/bucket-wording/start', h(async (req, res) => {
+  if (!can(req.user, 'edit')) throw fail(403, 'Your role cannot do this.');
+  const type = typeOf(req);
+  if (type !== 'collections') throw fail(400, 'Bucket wording is for collections agents.');
+  if (jobs[type] && jobs[type].state === 'running') return res.json(jobs[type]);
+  jobs[type] = { state: 'running', startedAt: now(), by: req.user.email, done: 0, total: 1, read: 0, created: 0, updated: 0, errors: [], step: 'Writing later-bucket wording' };
+  runBucketWording(type, jobs[type]).then(() => Object.assign(jobs[type], { state: 'done', step: '', done: 1, finishedAt: now() })).catch(e => Object.assign(jobs[type], { state: 'failed', error: e.publicMessage || e.message }));
+  res.json(jobs[type]);
+}));
+
 r.post('/library/:type/extract/start', h(async (req, res) => {
   if (!can(req.user, 'edit')) throw fail(403, 'Your role cannot do this.');
   const type = typeOf(req);

@@ -34,14 +34,34 @@ const CANON = SECTIONS.map(s=>s.id);
 // A prompt built with New prompt has its own section names: the browser supplies them through SECTION_TITLE_HOOK.
 const secTitle = id => (typeof SECTION_TITLE_HOOK === "function" && SECTION_TITLE_HOOK(id)) || (SECTIONS.find(s=>s.id===id)||{t:id}).t;
 
+// DPD buckets, in order of pressure. heat: how firm the wording is (1 reminder … 6 most direct).
 const BUCKETS = [
-  {id:"predue", t:"Pre-due / 0", d:"Reminder before or on due date", rec:["friendly","compliant"]},
-  {id:"b1", t:"1–30 DPD", d:"Early delinquency", rec:["friendly","compliant","firm"]},
-  {id:"b31", t:"31–60 DPD", d:"Building pressure", rec:["firm","compliant","urgency"]},
-  {id:"b61", t:"61–90 DPD", d:"Pre-NPA", rec:["firm","urgency"]},
-  {id:"b90", t:"90+ DPD", d:"NPA / recovery", rec:["urgency","firm","pushy"]}
+  {id:"predue", t:"Pre-due", short:"Pre-due", d:"Reminder before or on the due date", heat:1, rec:["friendly","compliant"]},
+  {id:"b1", t:"Bucket X · 1–30 DPD", short:"X (1–30)", d:"Early delinquency", heat:2, rec:["friendly","compliant","firm"]},
+  {id:"b31", t:"Bucket 2 · 31–60 DPD", short:"B2 (31–60)", d:"Building pressure", heat:3, rec:["firm","compliant","urgency"]},
+  {id:"b61", t:"Bucket 3 · 61–90 DPD", short:"B3 (61–90)", d:"Pre-NPA", heat:4, rec:["firm","urgency"]},
+  {id:"b91", t:"Bucket 4 · 91–120 DPD", short:"B4 (91–120)", d:"Serious delinquency", heat:5, rec:["urgency","firm","pushy"]},
+  {id:"b121", t:"Bucket 5 · 121–180 DPD", short:"B5 (121–180)", d:"Recovery", heat:5, rec:["urgency","pushy"]},
+  {id:"npa", t:"NPA · 180+ DPD", short:"NPA (180+)", d:"NPA / write-off recovery", heat:6, rec:["urgency","pushy"]},
+  {id:"b90", t:"90+ DPD (old)", short:"90+ (old)", d:"Older setting: treated as Bucket 4", heat:5, rec:["urgency","firm","pushy"], legacy:true}
 ];
+const bucketHeat = id => (BUCKETS.find(b=>b.id===id)||{heat:2}).heat;
+// Pressure levers the agent may use, chosen per agent. Every line must be true for the lender.
+// from: the first bucket heat at which the lever is used.
+const LEVERS = [
+  {id:"latefee", t:"Late fees", from:1, carrot:"Paying today stops the late fee adding up on this EMI.", stick:"Late charges and interest keep adding to the amount."},
+  {id:"bureau", t:"Credit bureau / CIBIL", from:2, carrot:"Paying on time keeps your repayment record clean.", stick:"Delayed payments are reported to the credit bureau and lower your CIBIL score."},
+  {id:"emergency", t:"No credit line in an emergency", from:2, stick:"With a low score, getting a loan or credit card when you need it urgently becomes difficult."},
+  {id:"costlier", t:"Future loans costlier", from:3, stick:"With a low score, future home and personal loans come at a higher interest rate, if they are approved at all."},
+  {id:"jobs", t:"Jobs that check credit", from:3, stick:"Some employers check credit reports when hiring, so a low score can affect job applications."},
+  {id:"legal", t:"Legal process, as per policy", from:4, stick:"If the account stays unpaid, it can move to the legal recovery process as per [client]'s policy."}
+];
+const DEFAULT_LEVERS = ["latefee","bureau"];
 const bucketT = id => (BUCKETS.find(b=>b.id===id)||{t:id}).t;
+const leverById = id => LEVERS.find(l=>l.id===id);
+// The persona a bucket starts with: firmer as the bucket gets later.
+const PERSONA_BY_HEAT = {1:"friendly",2:"firm",3:"firm",4:"urgency",5:"pushy",6:"pushy"};
+const personaForBucket = id => PERSONA_BY_HEAT[(BUCKETS.find(b=>b.id===id)||{heat:2}).heat] || "firm";
 
 const PERSONAS = [
   {id:"compliant", t:"Highly compliant", d:"Calm, respectful, consultative. Never pressures.", heat:1,
@@ -84,7 +104,7 @@ function baseCfg(){
     preset:"blank",
     client:{name:"",legal:"",callingAs:"lender",agency:"",product:"Personal loan",productDesc:"",agentName:"",agentGender:"female",languages:[...LANGS.slice(0,10)]},
     objective:"collections", bucket:"b1",
-    policy:{proposePartial:false,askHowMuch:false,dateModel:"monthend",waiver:"none",transfer:false,fieldVisit:false,upside:false,escalation:false,brokenPromise:"neutral",channels:["WhatsApp payment link"],spokenOverdue:false,spokenOutstanding:false,spokenLoans:false,partialFloor:500,fullOnlyUnder:2000,maxLinkAsks:2},
+    policy:{levers:[...DEFAULT_LEVERS],proposePartial:false,askHowMuch:false,dateModel:"monthend",waiver:"none",transfer:false,fieldVisit:false,upside:false,escalation:false,brokenPromise:"neutral",channels:["WhatsApp payment link"],spokenOverdue:false,spokenOutstanding:false,spokenLoans:false,partialFloor:500,fullOnlyUnder:2000,maxLinkAsks:2},
     compliance:{rpcAttempts:3,spouse:false,recording:true,windowStart:"08:00",windowEnd:"19:00",nameUse:"full",aiDisclosure:true},
     persona:"compliant",
     mapping:Object.fromEntries(SCHEMA.map(s=>[s.k,""])),
@@ -205,8 +225,11 @@ const BLOCKS = [
     b1:`Status line: "Your EMI of ${V("emi_amount")} is pending. I'm calling to help you clear it."`,
     b31:`Status line: "Your account is overdue${pol(c).spokenOverdue?` by ${V("total_overdue")}`:""}. Late charges are being added and this is being reported."`,
     b61:`Status line: "Your account has been overdue for over two months${pol(c).spokenOverdue?`, total ${V("total_overdue")}`:""}. It needs to be cleared now to stop further impact."`,
-    b90:`Status line: "Your account is seriously overdue${pol(c).spokenOverdue?` with ${V("total_overdue")} pending`:""}. We need to settle this now."`
-   })[c.bucket]},
+    b91:`Status line: "Your account is more than three months overdue${pol(c).spokenOverdue?`, with ${V("total_overdue")} pending`:""}. It has to be cleared now."`,
+    b121:`Status line: "Your account has been overdue for over four months${pol(c).spokenOverdue?`, with ${V("total_overdue")} pending`:""}. This is a serious recovery stage, and it needs to be settled now."`,
+    npa:`Status line: "Your account is more than six months overdue and is classified as a non-performing account${pol(c).spokenOverdue?`, with ${V("total_overdue")} pending`:""}. It needs to be settled now."`,
+    b90:`Status line: "Your account is more than three months overdue${pol(c).spokenOverdue?`, with ${V("total_overdue")} pending`:""}. It has to be cleared now."`
+   })[c.bucket] || ""},
   // FLOWS
   {id:"FLOW-ROUTE", sec:"flows", layer:"L6", src:"Shared core", t:"Router", edit:"reorder", when:()=>true,
    text:()=>`After the status line, route by the customer's answer: agrees to pay → Agree. Offers part → Partial. Refuses or delays → Persuasion. Says already paid → Paid claim. Vague → ask one specific date question.`},
@@ -216,15 +239,17 @@ const BLOCKS = [
    text:c=>`Ladder: ask for the full overdue first. If refused, propose the higher of one EMI or half the overdue. If refused, propose at least ${pol(c).partialFloor} rupees. Ask for the full amount only when the overdue is at most ${pol(c).fullOnlyUnder} rupees. Record partial_ptp for any partial.`},
   {id:"FLOW-PARTIAL-ACCEPT", sec:"flows", layer:"L3", src:"SMFG", t:"Partial: accept only if offered", edit:"toggle", when:c=>!pol(c).proposePartial,
    text:()=>`Never propose a partial amount. If the customer offers one, accept it, confirm the date for the balance, and record partial_ptp.`},
-  {id:"FLOW-PERSUADE", sec:"flows", layer:"L5", src:"Bucket × persona", t:"Persuasion cycle", edit:"generated", when:()=>true,
-   text:c=>{const heat=personaById(c.persona).heat; const p=pol(c);
-    const lines=[`Use one impact line per turn, then ask again. Start with the line for this bucket and move down:`,
-      `1. Credit: "Delayed payments are reported to the credit bureau and affect your CIBIL score."`,
-      `2. Future credit: "A low score makes future loans and cards harder to get."`,
-      `3. Charges: "Late charges and interest keep adding to the amount."`];
-    if(p.escalation) lines.push(`4. Escalation: "If this stays unpaid, the account moves to the next stage of recovery."`);
-    if(p.upside) lines.push(`Upside framing is allowed, worded as "may": "Paying now may help stop further charges."`); else lines.push(`Do not use upside framing or suggest any benefit of paying.`);
-    lines.push(`Maximum persuasion cycles: ${heat<=2?2:3}. Then offer a callback and close.`);
+  {id:"FLOW-PERSUADE", sec:"flows", layer:"L5", src:"Bucket × levers", t:"Persuasion cycle", edit:"generated", when:()=>true,
+   text:c=>{const heat=bucketHeat(c.bucket), p=pol(c);
+    const allowed=(p.levers&&p.levers.length?p.levers:DEFAULT_LEVERS).map(leverById).filter(Boolean).filter(l=>l.from<=heat);
+    const carrots=allowed.filter(l=>l.carrot), sticks=allowed.filter(l=>l.stick);
+    if(heat<=1) return [`Persuasion (pre-due): remind, don't press. One line, then confirm the payment will go through by the due date.`,
+      ...carrots.map((l,i)=>`- Benefit ${i+1}: "${l.carrot}"`), `Never use consequence lines before the due date.`].join("\n");
+    const lines=[`Persuasion: one line per turn, then ask for the payment again. ${heat<=2?"Alternate a benefit of paying (carrot) with a consequence of not paying (stick), and never use two sticks in a row.":heat<=4?"Lead with a consequence, then a benefit. Never use two sticks in a row.":"Lead with the most serious consequence that applies. Benefits are optional at this stage."}`];
+    if(carrots.length && heat<=4) lines.push(`Benefits (carrots):`, ...carrots.map((l,i)=>`- C${i+1}: "${l.carrot}"`));
+    if(sticks.length) lines.push(`Consequences (sticks), ${heat>=5?"most serious first":"in this order"}:`, ...(heat>=5?[...sticks].reverse():sticks).map((l,i)=>`- S${i+1}: "${l.stick.replace("[client]", coName(c))}"`));
+    lines.push(`Say these lines as written: they are true for this lender. Never add a consequence that isn't listed, never threaten, and never promise an outcome.`);
+    lines.push(`Maximum persuasion cycles: ${heat<=2?2:3}. Then ${heat>=5?"ask for any payment today, then offer":"offer"} a callback and close.`);
     return lines.join("\n")}},
   {id:"FLOW-BROKEN-STRICT", sec:"flows", layer:"L3", src:"SnapMint v2", t:"Broken promise: strict", edit:"toggle", when:c=>pol(c).brokenPromise==="strict",
    text:()=>`If ${V("prior_context")} shows a broken promise: name it plainly, without reproach words. Do not accept a new date without a payment today.`},
@@ -296,6 +321,6 @@ const SAMPLE_FEEDBACK = `UAT round 2 – SMFG (from client QA)
 8. Too many fillers, "achha achha" repeated.`;
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { LAYERS, PRECEDENCE, SECTIONS, CANON, secTitle, BUCKETS, bucketT, PERSONAS, personaById, LANGS, PRODUCTS, SCHEMA,
+  module.exports = { LEVERS, leverById, DEFAULT_LEVERS, bucketHeat, personaForBucket, LAYERS, PRECEDENCE, SECTIONS, CANON, secTitle, BUCKETS, bucketT, PERSONAS, personaById, LANGS, PRODUCTS, SCHEMA,
     DISPOSITIONS_BASE, baseCfg, PRESETS, BLOCKS, blockById, OPTIONAL, DEFECTS, SAMPLE_FEEDBACK };
 }

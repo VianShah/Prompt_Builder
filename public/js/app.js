@@ -327,6 +327,7 @@ function viewAgents() {
      <a href="#compare">Compare two agents</a></div></details>
    <a class="btn primary" href="#create">+ New agent</a></div></div>
   ${sarvamPanel()}
+  ${bestReminder()}
   ${bkBanner()}
   ${pullBar()}
   ${R.syncNote ? `<div class="notice"><span>${R.syncNote}</span><a href="#" class="small" data-act="sync-note-x">dismiss</a></div>` : ""}
@@ -342,6 +343,13 @@ function pullBar() {
 }
 // Every agent's prompt loads by itself once Sarvam is connected, so "how other agents handle this"
 // has something to compare. Once per page load, and only when some agent has no prompt yet.
+// Until someone picks the best agents, the Library would learn from every agent: say so on Agents.
+function bestReminder() {
+  if (!canDo("approve")) return "";
+  const col = (R.agents || []).filter(a => (a.agentType || "collections") === "collections" && (R.prompts || []).some(p => p.id === a.promptId));
+  if (!col.length || col.some(a => a.bestPractice)) return "";
+  return `<div class="notice"><span><b>Pick your best collections agents.</b> The Library learns collection tactics from them and writes firmer wording for later buckets.</span><a class="btn sm primary" href="#modules">Choose agents</a></div>`;
+}
 async function autoPull() {
   if (R.autoPulled || !canDo("edit") || !(R.sarvam && R.sarvam.hasToken && !R.sarvam.expired)) return;
   const missing = (R.agents || []).filter(a => !(R.prompts || []).some(p => p.id === a.promptId) && !a.sarvamPullError).length;
@@ -2153,6 +2161,7 @@ document.addEventListener("input", e => {
   if (R.editText && el.id === "ed-greeting") { R.editText.greeting = el.value; bkEditSave(R.curId, R.editText); }
 });
 document.addEventListener("change", e => {
+  if (e.target.dataset && e.target.dataset.actCheck === "best") { const el = e.target; api("PATCH", `/agents/${el.dataset.id}`, { bestPractice: el.checked }).then(() => Promise.all([loadAgents(true), loadLibType(R.libType || "collections", true)])).then(render).catch(err => { el.checked = !el.checked; toast(err.message); }); return; }
   const el = e.target;
   if (el.dataset.bind && (el.type === "checkbox" || el.tagName === "SELECT")) { setPath(L.cfg, el.dataset.bind, el.type === "checkbox" ? el.checked : el.value); R.aiReview = null; commit(); return; }
   if (el.dataset.bind) return;
@@ -2177,6 +2186,7 @@ document.addEventListener("change", e => {
   if (el.dataset.tx === "versionId" && R.tx) R.tx.versionId = el.value;
   if (el.id === "txFile" && el.files[0]) readTranscript(el.files[0]);
   if (c === "chk") { const it = item(el.dataset.id), s = chkSel(it), i = Number(el.dataset.i); el.checked ? s.add(i) : s.delete(i); render(); }
+  if (el.dataset.actChange === "best-bucket") { api("PATCH", `/agents/${el.dataset.id}`, { bucket: el.value }).then(() => loadLibType(R.libType || "collections", true)).then(render).catch(e => toast(e.message)); return; }
   if (el.dataset.actChange === "svt-agent") { R.svtAgent = el.value; R.svtScript = ($("#svt-script") || {}).value || ""; return; }
   if (el.dataset.actChange === "scope") { api("PATCH", `/feedback/${el.dataset.id}`, { scope: el.value }).then(reloadCur).then(() => toast(el.value === "shared" ? "This fix is now for every agent: it's logged as a shared fix when applied." : "This fix is for this agent only.")).catch(err => toast(err.message)); }
   if (c === "fbsel") { R.fbSel = R.fbSel || new Set(); el.checked ? R.fbSel.add(el.dataset.id) : R.fbSel.delete(el.dataset.id); render(); }

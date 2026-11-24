@@ -594,7 +594,13 @@ r.post('/prompts/:id/create-agent', h(async (req, res) => {
 r.patch('/agents/:id', h(async (req, res) => {
   if (!can(req.user, 'approve')) throw fail(403, 'Only approvers and admins can change this.');
   const a = await loadAgent(req.params.id);
-  const { uatAgentId, template, templateNote, agentType } = req.body || {};
+  const { uatAgentId, template, templateNote, agentType, bestPractice, bucket } = req.body || {};
+  // Best practice: this agent's prompt is a standard the Library learns from, for the bucket it works.
+  if (bestPractice !== undefined) {
+    if (bestPractice && !(await db.list('prompts')).some(p => p.agentId === a.id)) throw fail(409, 'Load this agent\'s prompt first, then mark it as best practice.');
+    a.bestPractice = !!bestPractice; a.bestBy = bestPractice ? req.user.email : null; a.bestAt = bestPractice ? now() : null;
+  }
+  if (bucket !== undefined) { if (!require('../../shared/blocks').BUCKETS.some(b => b.id === bucket && !b.legacy)) throw fail(400, 'Unknown bucket.'); a.bucket = bucket; }
   // Collections or sales: decides which skeleton and rule library the agent belongs to.
   if (agentType !== undefined) { if (!['collections', 'sales'].includes(agentType)) throw fail(400, 'Agent type is collections or sales.'); a.agentType = agentType; }
   if (uatAgentId !== undefined) {
@@ -609,7 +615,7 @@ r.patch('/agents/:id', h(async (req, res) => {
     a.templateBy = template ? req.user.email : null; a.templateAt = template ? now() : null;
   }
   await db.put('agents', a);
-  await audit(req.user, 'agent.update', { agent: a.id, uatAgentId: a.uatAgentId, template: a.template, agentType: a.agentType });
+  await audit(req.user, 'agent.update', { agent: a.id, uatAgentId: a.uatAgentId, template: a.template, agentType: a.agentType, bestPractice: !!a.bestPractice, bucket: a.bucket });
   res.json(a);
 }));
 

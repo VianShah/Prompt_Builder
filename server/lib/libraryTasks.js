@@ -162,6 +162,34 @@ Reply with only JSON: {"rules": [{"id": "the rule id above", "text": "the update
   return { rules, provider: r.provider };
 }
 
+// ---------- later-bucket wording for one rule from a best-practice agent ----------
+// The rule works for `from`; write how it should read in each later bucket. Pressure rises with the
+// bucket, using only the levers allowed. Rules that don't change with the bucket come back as same.
+async function bucketWording({ title, section, text, from, buckets, levers }) {
+  const req = `This rule comes from a live collections voice agent that works well in ${from.t}. Write how the SAME rule should read for each later DPD bucket below.
+Pressure rises with the bucket: later buckets are firmer, more direct and more urgent, with shorter turns and a payment-first ask. Keep it inside RBI Fair Practices: never threaten, never mention police, arrest, jail or contacting family or employer, never insult, never promise an outcome.
+The ONLY consequence and benefit lines you may use (each is true for this lender; add none of your own):
+${levers.map(l => `- ${l.t}${l.stick ? `: "${l.stick}"` : ''}${l.carrot ? ` / benefit: "${l.carrot}"` : ''} (from ${l.fromBucket})`).join('\n')}
+Keep the rule's purpose, structure, every {{variable}} and [[placeholder]] exactly, and its language and script (Hindi stays Hindi).
+If this rule should read the same in every bucket (identity checks, compliance, speech or language rules), reply {"same": true}.
+
+SECTION: ${section}
+RULE TITLE: ${title}
+RULE (${from.t}):
+${String(text).slice(0, 5000)}
+
+BUCKETS TO WRITE:
+${buckets.map(b => `- ${b.id}: ${b.t} (${b.d}; firmness ${b.heat} of 6)`).join('\n')}
+
+Reply with only JSON: {"same": false, "byBucket": {"bucket id": "the rule for that bucket"}}`;
+  const r = await llm.json(req, { maxTokens: 6000, timeoutMs: 180000 });
+  const d = r.data || {};
+  if (d.same) return { same: true, byBucket: {}, provider: r.provider };
+  const ids = new Set(buckets.map(b => b.id));
+  const byBucket = Object.fromEntries(Object.entries(d.byBucket || {}).filter(([k, v]) => ids.has(k) && String(v || '').trim()).map(([k, v]) => [k, String(v).trim()]));
+  return { same: false, byBucket, provider: r.provider };
+}
+
 // ---------- a library from documents (agent types with no live agents yet, e.g. sales) ----------
 // mode 'draft' (New prompt): rule text stays clean; what only the engineer can answer comes back as questions per rule.
 async function libraryFromDocs({ agentType, docs, skeleton, mode }) {
@@ -200,4 +228,4 @@ function splitBySkeleton(text, skeleton) {
   return { sections: out, unplaced: extra };
 }
 
-module.exports = { TYPES, slug, deriveSkeleton, extractRules, mergeSection, bestModules, refineRule, refineWithAnswers, libraryFromDocs, splitBySkeleton };
+module.exports = { TYPES, slug, deriveSkeleton, extractRules, mergeSection, bestModules, refineRule, refineWithAnswers, bucketWording, libraryFromDocs, splitBySkeleton };
