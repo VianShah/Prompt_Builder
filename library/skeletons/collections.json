@@ -1,0 +1,166 @@
+{
+  "id": "skeleton-collections",
+  "agentType": "collections",
+  "greeting": {
+    "desc": "A short first line spoken before any loan talk: the agent's name and company (often with a recording disclosure), usually ending in an identity check or a pending-EMI hook, with no amounts or loan details until the right person is confirmed."
+  },
+  "sections": [
+    {
+      "id": "persona",
+      "title": "Persona / Who you are",
+      "mandatory": true,
+      "desc": "Defines the agent's name, role, company, gender and voice (warm, calm, firm and respectful, never threatening), and when to say it is a virtual assistant.",
+      "aliases": [
+        "Who you are",
+        "Persona & Demeanor",
+        "Role"
+      ],
+      "kb": false
+    },
+    {
+      "id": "environment",
+      "title": "Environment & Situation",
+      "mandatory": true,
+      "desc": "Describes the outbound call setting, who may answer (borrower, family, wrong number, voicemail), and the borrower profile and context.",
+      "aliases": [
+        "Context"
+      ],
+      "kb": false
+    },
+    {
+      "id": "objective",
+      "title": "Objective",
+      "mandatory": true,
+      "desc": "Ranks the call goals from payment on this call, to a time-bound promise, to a callback, and says every call ends with one outcome and a closing.",
+      "aliases": [
+        "Call Objectives & Hierarchy",
+        "What you want from the call"
+      ],
+      "kb": false
+    },
+    {
+      "id": "rules",
+      "title": "Non-negotiable Rules",
+      "mandatory": true,
+      "desc": "Hard guardrails checked every turn: identity gate, no threats, waivers or invented figures, payment-channel limits, do-not-call, abuse, death and distress handling, and the calling-hours window.",
+      "aliases": [
+        "Non-negotiable rules",
+        "Core rules",
+        "Guardrails"
+      ],
+      "kb": false
+    },
+    {
+      "id": "speaking-style",
+      "title": "Speaking Style",
+      "mandatory": true,
+      "desc": "Controls spoken output: short turns, one question per turn, numbers and dates in words, Hinglish and language matching, female self-reference, how the customer's name is used, no repetition, and no markdown.",
+      "aliases": [
+        "How you talk",
+        "Speaking style rules",
+        "Tone and conversational style"
+      ],
+      "kb": false
+    },
+    {
+      "id": "inputs",
+      "title": "Inputs, Variables & Tools",
+      "mandatory": true,
+      "desc": "Lists the call variables (name, EMI, overdue amount, DPD, dates, prior context, link status), which are required or optional, what may be spoken, and the tools the agent can call.",
+      "aliases": [
+        "What you know",
+        "Call inputs",
+        "Input Variables",
+        "Facts",
+        "Operational Facts & Variables"
+      ],
+      "kb": true
+    },
+    {
+      "id": "identity",
+      "title": "Opening & Identity Verification",
+      "mandatory": true,
+      "desc": "Confirms the person is the borrower before any loan detail is shared, covering re-ask limits, third parties and wrong numbers, machines, and phone handover.",
+      "aliases": [
+        "Is this the customer?",
+        "Right Party Contact",
+        "Greeting and right-party confirmation",
+        "Mandatory opening"
+      ],
+      "kb": false
+    },
+    {
+      "id": "conversation-flow",
+      "title": "Conversation Flow (Debt Anchor, Payment Ask & Link)",
+      "mandatory": true,
+      "desc": "The main collections flow once identity is confirmed: state the pending amount using the history, ask for payment today, send and guide the payment link on the call, then confirm any promise.",
+      "aliases": [
+        "The call",
+        "After identity is confirmed",
+        "Phase 3: EMI & Payment Discussion",
+        "Debt anchor and ask",
+        "Payment Agreement Sequence"
+      ],
+      "kb": false
+    },
+    {
+      "id": "objections",
+      "title": "Objections, Refusals & Fallback Ladder",
+      "mandatory": true,
+      "desc": "Handles stalling, refusal, hardship and requests for more time with a limited number of persuasion attempts, then steps down from full amount to partial payment to a short time-boxed promise or callback.",
+      "aliases": [
+        "When they can't pay right now",
+        "Stepped-Down Recovery Ladder",
+        "Refusal & Persuasion Ladder",
+        "Objection triage"
+      ],
+      "kb": false
+    },
+    {
+      "id": "special-situations",
+      "title": "Special Situations",
+      "mandatory": true,
+      "desc": "Handles non-standard cases: already-paid or auto-debit claims, merchant or fraud disputes, grievances, legal mentions, manager requests, settlement asks, distress and do-not-call.",
+      "aliases": [
+        "Detailed Operational Flows",
+        "Grievance",
+        "Already-Paid Flow"
+      ],
+      "kb": false
+    },
+    {
+      "id": "closings",
+      "title": "Closings & Dispositions",
+      "mandatory": true,
+      "desc": "Gives the fixed closing line for each outcome (paid, promise, callback, wrong number, refusal, sensitive and others), the disposition to log, and the rule that the call ends with end_interaction.",
+      "aliases": [
+        "Closing lines",
+        "Ending every call",
+        "Dispositions"
+      ],
+      "kb": false
+    }
+  ],
+  "derivedFrom": [
+    "Snapmint Collections - Anita v1",
+    "Snapmint Collections - Dev (Main Book) v1",
+    "SMFG-Agent Migrated",
+    "Test_Mpokket-Kollect",
+    "Kollect-Mpokket-TESTDEMO",
+    "Test_Agent_Mpokket",
+    "SMFG PL Collections - Priya v3",
+    "Predixion AI Demo - Kollect"
+  ],
+  "confirmedBy": "viansha@predixion.ai",
+  "confirmedAt": "2026-11-25T06:54:14.444Z",
+  "history": [
+    {
+      "at": "2026-11-25T06:54:14.444Z",
+      "by": "viansha@predixion.ai",
+      "action": "confirmed"
+    }
+  ],
+  "_kind": "skeleton",
+  "updatedAt": "2026-11-25T06:54:14.444Z",
+  "createdAt": "2026-11-25T06:54:14.444Z"
+}
