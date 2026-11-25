@@ -16,7 +16,7 @@ const PB = require('../../shared/blocks');
 const lt = require('../lib/libraryTasks');
 const examples = require('../lib/examples');
 const ai = require('../lib/aiTasks');
-const { agentText } = require('../lib/agentText');
+const { agentText, agentSource } = require('../lib/agentText');
 const { can } = require('../auth');
 const { uid, now, h, fail, audit } = require('../lib/util');
 
@@ -52,7 +52,7 @@ async function entriesOf(type) {
 // Agents of this type that have a prompt in the builder.
 async function agentsOf(type) {
   const [agents, prompts] = await Promise.all([db.list('agents'), db.list('prompts')]);
-  return agents.filter(a => agentTypeOf(a) === type).map(a => ({ id: a.id, name: a.name, client: a.client || '', hasPrompt: prompts.some(p => p.agentId === a.id), bestPractice: !!a.bestPractice, bucket: a.bucket || 'b1' }));
+  return agents.filter(a => agentTypeOf(a) === type).map(a => ({ id: a.id, name: a.name, client: a.client || '', hasPrompt: prompts.some(p => p.agentId === a.id), bestPractice: !!a.bestPractice, bucket: a.bucket || 'b1', bestVersion: a.bestVersion || null, newest: a.sarvamNewest || null }));
 }
 
 // Built-in blocks (collections only), placed into the skeleton's sections by name.
@@ -103,12 +103,27 @@ r.get('/library/:type', h(async (req, res) => {
   res.json({ type, skeleton: sk, entries: entries.map(entryView), builtins: builtinsFor(type, sk, {}), agents, job: jobs[type] || null });
 }));
 
+// What a job may learn from: only the agents ticked as best practice, never "everything".
+async function pickedAgents(type) {
+  const picked = (await agentsOf(type)).filter(a => a.bestPractice && a.hasPrompt);
+  if (!picked.length) throw fail(409, `Tick the ${type} agents to learn from first (Best-practice agents, above). Only ticked agents are read.`);
+  return picked;
+}
 r.post('/library/:type/skeleton/derive', h(async (req, res) => {
   if (!can(req.user, 'edit')) throw fail(403, 'Your role cannot do this.');
   const type = typeOf(req);
-  const prompts = [];
-  for (const a of (await agentsOf(type)).filter(x => x.hasPrompt)) { try { const t = await agentText(a.id); prompts.push({ agent: a.name, greeting: t.greeting, text: t.text }); } catch (_) { /* skip */ } }
-  res.json(await lt.deriveSkeleton({ agentType: type, prompts }));
+  const picked = await pickedAgents(type);
+  // If the browser goes away (the Stop button), the AI request is cut off too.
+  const ac = new AbortController(); res.on('close', () => { if (!res.writableEnded) ac.abort(); });
+  const prompts = [], used = [], skipped = [];
+  for (const a of picked) {
+    try { const t = await agentSource(a.id, { signal: ac.signal }); let greeting = ''; try { greeting = (await agentText(a.id)).greeting || ''; } catch (_) { /* no stored greeting */ } prompts.push({ agent: a.name, greeting, text: t.text }); used.push({ agent: a.name, version: t.version, latest: t.latest, via: t.via }); if (t.note) skipped.push(`${a.name}: ${t.note}`); }
+    catch (e) { if (e.code === 'cancelled') return; skipped.push(`${a.name}: ${e.publicMessage || e.message}`); }
+  }
+  if (!prompts.length) throw fail(409, `None of the ticked agents could be read. ${skipped[0] || ''}`);
+  const out = await lt.deriveSkeleton({ agentType: type, prompts, signal: ac.signal });
+  if (ac.signal.aborted) return;
+  res.json({ ...out, learnedFrom: used, notes: skipped });
 }));
 
 r.put('/library/:type/skeleton', h(async (req, res) => {
@@ -144,60 +159,75 @@ async function saveGroup(type, sk, sec, g, members, user) {
     rules: [{ id: 'R1', title: g.title, slot: sec.id, text: g.text }], requires: [...new Set((g.text.match(/\{\{\s*(\w+)\s*\}\}/g) || []).map(s => s.replace(/[{}\s]/g, '')))],
     params: [...new Set((g.text.match(/\[\[(\w+)\]\]/g) || []).map(s => s.slice(2, -2)))].map(p => ({ name: p, label: p.replace(/_/g, ' '), example: '' })),
     options: [], exits: [], policyDeps: [], tests: [], sourceAgents: agents, alternatives: members.filter(m => norm(m.text) !== norm(g.text)).map(m => ({ agent: m.agent, text: m.text })).slice(0, 12),
-    owner: user.email, history: [{ at: now(), by: user.email, action: 'extracted', note: `From ${agents.map(a => a.name).join(', ')}` }] });
+    owner: user.email, history: [{ at: now(), by: user.email, action: 'extracted', note: `From ${[...new Map(members.map(m => [m.agentId, `${m.agent}${m.version ? ` (Sarvam v${m.version})` : ''}`])).values()].join(', ')}` }] });
   return true;
 }
+const ctls = {}; // type -> AbortController of the running job (Stop cuts the request in flight)
+const stopped = J => J.cancel || (ctls[J.type] && ctls[J.type].signal.aborted);
 async function runExtract(type, user) {
-  const J = jobs[type];
+  const J = jobs[type], signal = ctls[type].signal;
   const sk = await skeletonOf(type);
-  const all = (await agentsOf(type)).filter(a => a.hasPrompt), best = all.filter(a => a.bestPractice);
-  const agents = best.length ? best : all; J.from = best.length ? 'best' : 'all'; J.agents = agents.map(a => a.name);
+  const agents = await pickedAgents(type); // only the ticked agents
+  J.agents = agents.map(a => a.name); J.used = [];
   J.total = agents.length + sk.sections.length + (type === 'collections' ? 1 : 0); J.done = 0;
   const pool = [];
   for (const a of agents) {
+    if (stopped(J)) return finishStopped(J, user, type);
     J.step = `Reading ${a.name}`;
     try {
-      const t = await agentText(a.id); const out = await lt.extractRules({ skeleton: sk, agent: a.name, client: a.client, text: t.text });
+      const t = await agentSource(a.id, { signal });
+      J.used.push({ agent: a.name, version: t.version, newest: t.newest, latest: t.latest, chosen: t.chosen, via: t.via });
+      if (t.note) J.errors.push(`${a.name}: ${t.note}`);
+      const out = await lt.extractRules({ skeleton: sk, agent: a.name, client: a.client, text: t.text, signal });
       // Safety net: whatever the AI left of this lender's names, links or numbers becomes a placeholder.
       const names = examples.namesOf({ name: a.name, cfg: { client: { name: a.client || '' } } }, { name: a.name, client: a.client }, t.text);
       const clean = txt => examples.anonymise(txt, names).replace(/\[client\]/g, '[[client_name]]').replace(/\[agent name\]/g, '[[agent_name]]');
-      out.rules.forEach(x => pool.push({ ...x, text: clean(x.text), agent: a.name, agentId: a.id, bucket: a.bucket || 'b1', best: !!a.bestPractice })); J.read++;
+      out.rules.forEach(x => pool.push({ ...x, text: clean(x.text), agent: a.name, agentId: a.id, version: t.version, bucket: a.bucket || 'b1', best: true })); J.read++;
     }
-    catch (e) { J.errors.push(`${a.name}: ${e.publicMessage || e.message}`); }
+    catch (e) { if (e.code === 'cancelled') return finishStopped(J, user, type); J.errors.push(`${a.name}: ${e.publicMessage || e.message}`); }
     J.done++;
   }
   for (const sec of sk.sections) {
+    if (stopped(J)) return finishStopped(J, user, type);
     J.step = `Merging ${sec.title}`;
     const rules = pool.filter(x => x.section === sec.id);
     if (rules.length) {
-      try { const { groups } = await lt.mergeSection({ section: sec, rules }); for (const g of groups) { if (await saveGroup(type, sk, sec, g, g.members.map(i => rules[i]), user)) J.created++; else J.updated++; } }
-      catch (e) { J.errors.push(`${sec.title}: ${e.publicMessage || e.message}`); }
+      try { const { groups } = await lt.mergeSection({ section: sec, rules, signal }); for (const g of groups) { if (await saveGroup(type, sk, sec, g, g.members.map(i => rules[i]), user)) J.created++; else J.updated++; } }
+      catch (e) { if (e.code === 'cancelled') return finishStopped(J, user, type); J.errors.push(`${sec.title}: ${e.publicMessage || e.message}`); }
     }
     J.done++;
   }
-  if (type === 'collections') { J.step = 'Writing later-bucket wording'; await runBucketWording(type, J); J.done++; }
+  if (type === 'collections') { J.step = 'Writing later-bucket wording'; await runBucketWording(type, J, new Set(agents.map(a => a.id))); J.done++; }
+  if (stopped(J)) return finishStopped(J, user, type);
   J.state = 'done'; J.step = ''; J.finishedAt = now();
   await audit(user, 'library.extract', { type, agents: J.read, created: J.created, updated: J.updated, errors: J.errors.length });
+}
+async function finishStopped(J, user, type) {
+  J.state = 'stopped'; J.step = ''; J.finishedAt = now();
+  await audit(user, 'library.extract.stopped', { type, agents: J.read, created: J.created, updated: J.updated });
 }
 // Later-bucket wording: every extracted entry that changes with the bucket gets a version for each bucket
 // after the one it came from. Entries that read the same in every bucket are marked and skipped next time.
 const SAME_IN_EVERY_BUCKET = /identity|rpc|compliance|non.?negotiable|speech|tts|language|pronunciation|environment|input|variable|knowledge|faq|hygiene|silence/i;
-async function runBucketWording(type, J) {
-  const live = PB.BUCKETS.filter(b => !b.legacy);
+async function runBucketWording(type, J, onlyAgents) {
+  const live = PB.BUCKETS.filter(b => !b.legacy), signal = ctls[type] && ctls[type].signal;
   const levers = PB.LEVERS.map(l => ({ ...l, fromBucket: (live.find(b => b.heat >= l.from) || live[0]).short }));
-  const todo = (await entriesOf(type)).filter(m => m.origin === 'extracted' && !m.bucketSame && !Object.keys(m.byBucket || {}).length);
+  const picked = onlyAgents || new Set((await agentsOf(type)).filter(a => a.bestPractice).map(a => a.id));
+  // Only entries learned from the ticked agents.
+  const todo = (await entriesOf(type)).filter(m => m.origin === 'extracted' && !m.bucketSame && !Object.keys(m.byBucket || {}).length && (m.sourceAgents || []).some(a => picked.has(a.id)));
   J.wordingTotal = todo.length; J.worded = 0; J.wordingSame = 0;
   for (const m of todo) {
+    if (stopped(J)) return;
     const from = live.find(b => b.id === (m.fromBucket || 'b1')) || live[1];
     const rule = (m.rules && m.rules[0] && m.rules[0].text) || '';
     if (!rule.trim()) continue;
     if (SAME_IN_EVERY_BUCKET.test(`${m.section} ${m.title}`)) { await db.put('modules', { ...m, bucketSame: true }); J.wordingSame++; continue; }
     J.step = `Writing later-bucket wording: ${m.title}`;
     try {
-      const out = await lt.bucketWording({ title: m.title, section: m.section, text: rule, from, buckets: live.filter(b => b.heat > from.heat), levers });
+      const out = await lt.bucketWording({ title: m.title, section: m.section, text: rule, from, buckets: live.filter(b => b.heat > from.heat), levers, signal });
       await db.put('modules', { ...m, fromBucket: from.id, bucketSame: out.same, byBucket: out.byBucket, history: [...(m.history || []), { at: now(), by: 'library', action: out.same ? 'same in every bucket' : `wording for ${Object.keys(out.byBucket).length} later buckets` }] });
       if (out.same) J.wordingSame++; else J.worded++;
-    } catch (e) { J.errors.push(`${m.title}: ${e.publicMessage || e.message}`); }
+    } catch (e) { if (e.code === 'cancelled') return; J.errors.push(`${m.title}: ${e.publicMessage || e.message}`); }
   }
 }
 r.post('/library/:type/bucket-wording/start', h(async (req, res) => {
@@ -205,8 +235,10 @@ r.post('/library/:type/bucket-wording/start', h(async (req, res) => {
   const type = typeOf(req);
   if (type !== 'collections') throw fail(400, 'Bucket wording is for collections agents.');
   if (jobs[type] && jobs[type].state === 'running') return res.json(jobs[type]);
-  jobs[type] = { state: 'running', startedAt: now(), by: req.user.email, done: 0, total: 1, read: 0, created: 0, updated: 0, errors: [], step: 'Writing later-bucket wording' };
-  runBucketWording(type, jobs[type]).then(() => Object.assign(jobs[type], { state: 'done', step: '', done: 1, finishedAt: now() })).catch(e => Object.assign(jobs[type], { state: 'failed', error: e.publicMessage || e.message }));
+  await pickedAgents(type);
+  jobs[type] = { type, state: 'running', startedAt: now(), by: req.user.email, done: 0, total: 1, read: 0, created: 0, updated: 0, errors: [], step: 'Writing later-bucket wording' };
+  ctls[type] = new AbortController();
+  runBucketWording(type, jobs[type]).then(() => Object.assign(jobs[type], stopped(jobs[type]) ? { state: 'stopped', step: '', finishedAt: now() } : { state: 'done', step: '', done: 1, finishedAt: now() })).catch(e => Object.assign(jobs[type], { state: 'failed', error: e.publicMessage || e.message }));
   res.json(jobs[type]);
 }));
 
@@ -216,9 +248,21 @@ r.post('/library/:type/extract/start', h(async (req, res) => {
   if (jobs[type] && jobs[type].state === 'running') return res.json(jobs[type]);
   if (!(await skeletonOf(type))) throw fail(409, 'Confirm the structure (skeleton) first, so rules can be placed in its sections.');
   if (!(await agentsOf(type)).some(a => a.hasPrompt)) throw fail(409, 'No agent of this type has a prompt in the builder. Load the prompts from Sarvam first.');
-  jobs[type] = { state: 'running', startedAt: now(), by: req.user.email, done: 0, total: 1, read: 0, created: 0, updated: 0, errors: [], step: 'Starting' };
-  runExtract(type, req.user).catch(e => { Object.assign(jobs[type], { state: 'failed', error: e.publicMessage || e.message }); });
+  await pickedAgents(type);
+  jobs[type] = { type, state: 'running', startedAt: now(), by: req.user.email, done: 0, total: 1, read: 0, created: 0, updated: 0, errors: [], step: 'Starting' };
+  ctls[type] = new AbortController();
+  runExtract(type, req.user).catch(e => { Object.assign(jobs[type], e.code === 'cancelled' ? { state: 'stopped', step: '', finishedAt: now() } : { state: 'failed', error: e.publicMessage || e.message }); });
   res.json(jobs[type]);
+}));
+// Stop the running build: the AI request in flight is cut off, and the job ends as "stopped". Entries
+// already saved are kept; rules read but not yet merged are dropped.
+r.post('/library/:type/extract/stop', h(async (req, res) => {
+  if (!can(req.user, 'edit')) throw fail(403, 'Your role cannot do this.');
+  const type = typeOf(req), J = jobs[type];
+  if (!J || J.state !== 'running') throw fail(409, 'Nothing is running.');
+  J.cancel = true; J.step = 'Stopping…';
+  if (ctls[type]) ctls[type].abort();
+  res.json(J);
 }));
 r.get('/library/:type/extract/status', h(async (req, res) => res.json(jobs[typeOf(req)] || { state: 'idle' })));
 
@@ -249,6 +293,11 @@ r.post('/library/:type/from-docs/save', h(async (req, res) => {
 r.post('/library/:type/source', h(async (req, res) => {
   const type = typeOf(req), sk = await skeletonFor(type);
   const t = await agentText(String((req.body || {}).agentId || ''));
+  // A live agent is read at its newest committed Sarvam version. A template keeps its approved wording.
+  let sarvamVersion = null, fresher = false;
+  if (!t.agent.template) {
+    try { const src = await agentSource(t.agent.id); if (src.via === 'sarvam' && src.text) { fresher = src.text.trim() !== String(t.text).trim(); t.text = src.text; sarvamVersion = src.version; } } catch (_) { /* keep the builder's copy */ }
+  }
   const split = lt.splitBySkeleton(t.text, sk);
   const placed = Object.values(split.sections).flat().join('').length, total = t.text.length || 1;
   // One rule per paragraph, so each can be kept, refined or removed on its own.
@@ -258,7 +307,7 @@ r.post('/library/:type/source', h(async (req, res) => {
     try { const out = await lt.extractRules({ skeleton: sk, agent: t.agent.name, client: t.agent.client, text: t.text }); sections = Object.fromEntries(sk.sections.map(s => [s.id, out.rules.filter(x => x.section === s.id).map(x => ({ text: x.text, title: x.title, from: { agent: t.agent.name } }))])); via = 'ai'; }
     catch (e) { if (split.unplaced.length) sections[sk.sections[0].id] = [...(sections[sk.sections[0].id] || []), ...split.unplaced.map(text => ({ text, from: { agent: t.agent.name } }))]; }
   }
-  res.json({ agent: { id: t.agent.id, name: t.agent.name }, greeting: t.greeting, sections, via, variables: t.variables });
+  res.json({ agent: { id: t.agent.id, name: t.agent.name, template: !!t.agent.template }, greeting: t.greeting, sections, via, variables: [...new Set((t.text.match(/\{\{\s*(\w+)\s*\}\}/g) || []).map(x => x.replace(/[{}\s]/g, '')))].slice(0, 60), sarvamVersion, fresher });
 }));
 
 r.post('/library/:type/best', h(async (req, res) => {

@@ -13,8 +13,8 @@ function toast(msg) { const t = $("#toast"); t.textContent = msg; t.hidden = fal
 const layerChip = l => `<span class="chip lchip" style="background:var(--${String(l || "l6").toLowerCase()})">${esc(l)}</span>`;
 const statusPill = s => `<span class="status st-${esc(s)}">${esc({ draft: "Draft", pending: "Waiting for approval", approved: "Approved", live: "Live", rejected: "Rejected", superseded: "Superseded", rolled_back: "Rolled back" }[s] || s)}</span>`;
 
-async function api(method, path, body) {
-  const res = await fetch("/api" + path, { method, headers: body ? { "Content-Type": "application/json" } : {}, body: body ? JSON.stringify(body) : undefined, credentials: "same-origin" });
+async function api(method, path, body, opts = {}) {
+  const res = await fetch("/api" + path, { method, headers: body ? { "Content-Type": "application/json" } : {}, body: body ? JSON.stringify(body) : undefined, credentials: "same-origin", signal: opts.signal });
   if (res.status === 401 && path !== "/login") { showLogin(); throw new Error("Sign in to continue."); }
   const ct = res.headers.get("content-type") || "";
   const data = ct.includes("json") ? await res.json().catch(() => ({})) : await res.text();
@@ -2131,7 +2131,7 @@ document.addEventListener("click", e => {
 });
 $("#modal").addEventListener("click", e => { if (e.target.id === "modal") closeModal(); });
 // Remember which feedback-history group is open, so it stays open when the page redraws.
-document.addEventListener("toggle", e => { const d = e.target; if (d.matches && d.matches("details[data-in-box]")) { R.inOpen = d.open; return; } if (d.matches && d.matches("details[data-fbm]")) { R.fbMore = R.fbMore || new Set(); d.open ? R.fbMore.add(d.dataset.fbm) : R.fbMore.delete(d.dataset.fbm); return; } if (d.matches && d.matches("details[data-g]")) { if (d.open) R.fbOpen = d.dataset.g; else if (R.fbOpen === d.dataset.g) R.fbOpen = null; } }, true);
+document.addEventListener("toggle", e => { const d = e.target; if (d.matches && d.matches("details[data-keep]")) { R.keepOpen = R.keepOpen || {}; R.keepOpen[d.dataset.keep] = d.open; return; } if (d.matches && d.matches("details[data-in-box]")) { R.inOpen = d.open; return; } if (d.matches && d.matches("details[data-fbm]")) { R.fbMore = R.fbMore || new Set(); d.open ? R.fbMore.add(d.dataset.fbm) : R.fbMore.delete(d.dataset.fbm); return; } if (d.matches && d.matches("details[data-g]")) { if (d.open) R.fbOpen = d.dataset.g; else if (R.fbOpen === d.dataset.g) R.fbOpen = null; } }, true);
 document.addEventListener("click", e => $$("details.more[open]").forEach(d => { if (!d.contains(e.target)) d.open = false; }));
 document.addEventListener("keydown", e => { if (e.key === "Escape" && !$("#modal").hidden) closeModal(); });
 
@@ -2161,7 +2161,7 @@ document.addEventListener("input", e => {
   if (R.editText && el.id === "ed-greeting") { R.editText.greeting = el.value; bkEditSave(R.curId, R.editText); }
 });
 document.addEventListener("change", e => {
-  if (e.target.dataset && e.target.dataset.actCheck === "best") { const el = e.target; api("PATCH", `/agents/${el.dataset.id}`, { bestPractice: el.checked }).then(() => Promise.all([loadAgents(true), loadLibType(R.libType || "collections", true)])).then(render).catch(err => { el.checked = !el.checked; toast(err.message); }); return; }
+  if (e.target.dataset && e.target.dataset.actCheck === "best") { const el = e.target; api("PATCH", `/agents/${el.dataset.id}`, { bestPractice: el.checked }).then(() => Promise.all([loadAgents(true), loadLibType(R.libType || "collections", true)])).then(() => { render(); libLoadVersions(R.libType || "collections"); }).catch(err => { el.checked = !el.checked; toast(err.message); }); return; }
   const el = e.target;
   if (el.dataset.bind && (el.type === "checkbox" || el.tagName === "SELECT")) { setPath(L.cfg, el.dataset.bind, el.type === "checkbox" ? el.checked : el.value); R.aiReview = null; commit(); return; }
   if (el.dataset.bind) return;
@@ -2186,6 +2186,7 @@ document.addEventListener("change", e => {
   if (el.dataset.tx === "versionId" && R.tx) R.tx.versionId = el.value;
   if (el.id === "txFile" && el.files[0]) readTranscript(el.files[0]);
   if (c === "chk") { const it = item(el.dataset.id), s = chkSel(it), i = Number(el.dataset.i); el.checked ? s.add(i) : s.delete(i); render(); }
+  if (el.dataset.actChange === "best-version") { api("PATCH", `/agents/${el.dataset.id}`, { bestVersion: el.value || null }).then(() => Promise.all([loadAgents(true), loadLibType(R.libType || "collections", true)])).then(render).catch(e => toast(e.message)); return; }
   if (el.dataset.actChange === "best-bucket") { api("PATCH", `/agents/${el.dataset.id}`, { bucket: el.value }).then(() => loadLibType(R.libType || "collections", true)).then(render).catch(e => toast(e.message)); return; }
   if (el.dataset.actChange === "svt-agent") { R.svtAgent = el.value; R.svtScript = ($("#svt-script") || {}).value || ""; return; }
   if (el.dataset.actChange === "scope") { api("PATCH", `/feedback/${el.dataset.id}`, { scope: el.value }).then(reloadCur).then(() => toast(el.value === "shared" ? "This fix is now for every agent: it's logged as a shared fix when applied." : "This fix is for this agent only.")).catch(err => toast(err.message)); }

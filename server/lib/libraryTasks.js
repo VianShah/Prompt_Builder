@@ -28,7 +28,7 @@ function normSkeleton(d, agentType) {
 }
 
 // The parts every prompt of this type has, in order. prompts: [{ agent, greeting, text }]
-async function deriveSkeleton({ agentType, prompts }) {
+async function deriveSkeleton({ agentType, prompts, signal }) {
   const list = (prompts || []).filter(p => p && String(p.text || '').trim()).slice(0, 25);
   if (!list.length) throw err('No agent of this type has a prompt in the builder yet. Load the prompts from Sarvam first.');
   const per = Math.max(3000, Math.floor(140000 / list.length));
@@ -44,13 +44,13 @@ Reply with only JSON: {"greeting": {"desc": "one sentence"}, "sections": [{"id":
 
 PROMPTS:
 ${list.map((p, i) => `=== AGENT ${i + 1}: ${clip(p.agent, 120)} ===\nGREETING: ${clip(p.greeting, 600)}\nINSTRUCTIONS:\n${clip(p.text, per)}`).join('\n\n')}`;
-  const r = await llm.json(req, { maxTokens: 6000, timeoutMs: 300000 });
+  const r = await llm.json(req, { maxTokens: 6000, timeoutMs: 300000, signal });
   return { ...normSkeleton(r.data || {}, agentType), derivedFrom: list.map(p => p.agent), provider: r.provider };
 }
 
 // ---------- extract one agent's rules ----------
 const secLine = s => `- ${s.id}: ${s.title}${s.aliases && s.aliases.length ? ` (also called: ${s.aliases.join(', ')})` : ''}${s.desc ? ` — ${s.desc}` : ''}`;
-async function extractRules({ skeleton, agent, client, text }) {
+async function extractRules({ skeleton, agent, client, text, signal }) {
   const T = String(text || '');
   const req = `Split this voice agent's prompt into RULES and place each in a section of the standard structure below.
 A rule is one self-contained instruction or step (a short paragraph or a few lines). Keep the agent's wording and language exactly (Hindi stays Hindi), but replace the client's company name with [[client_name]], the agent's own name with [[agent_name]], and other client-only fixed facts (product names, helpline numbers, fees) with [[snake_case]] placeholders. Keep {{call_variables}} exactly as written. Remove references to the prompt's own numbering ("as in rule 7").
@@ -68,7 +68,7 @@ ${T.slice(0, 150000)}
 >>>
 
 Reply with only JSON: {"rules": [{"section": "section id", "title": "", "text": "", "source": ""}]}`;
-  const r = await llm.json(req, { maxTokens: 24000, timeoutMs: 420000 });
+  const r = await llm.json(req, { maxTokens: 24000, timeoutMs: 420000, signal });
   const ids = new Set(skeleton.sections.map(s => s.id));
   const rules = ((r.data && r.data.rules) || []).filter(x => x && String(x.text || '').trim()).map(x => ({
     section: ids.has(x.section) ? x.section : skeleton.sections[0].id, title: clip(x.title || 'Rule', 80), text: String(x.text).trim(), source: clip(x.source, 4000),
@@ -78,7 +78,7 @@ Reply with only JSON: {"rules": [{"section": "section id", "title": "", "text": 
 
 // ---------- merge near-duplicates across agents (one section at a time) ----------
 // rules: [{ agent, title, text }] -> groups: [{ title, purpose, members: [i], text }]
-async function mergeSection({ section, rules }) {
+async function mergeSection({ section, rules, signal }) {
   if (rules.length === 1) return { groups: [{ title: rules[0].title, purpose: '', members: [0], text: rules[0].text }] };
   const req = `Below are rules from several voice agents for the same section: "${section.title}"${section.desc ? ` (${section.desc})` : ''}.
 Group the rules that govern the SAME behaviour (they may be worded differently). For each group:
@@ -93,7 +93,7 @@ RULES:
 ${rules.map((x, i) => `[${i + 1}] (${clip(x.agent, 60)}) ${x.title}\n${clip(x.text, 2500)}`).join('\n\n')}
 
 Reply with only JSON: {"groups": [{"title": "", "purpose": "", "members": [1, 2], "text": ""}]}`;
-  const r = await llm.json(req, { maxTokens: 16000, timeoutMs: 300000 });
+  const r = await llm.json(req, { maxTokens: 16000, timeoutMs: 300000, signal });
   const used = new Set();
   const groups = ((r.data && r.data.groups) || []).map(g => ({ title: clip(g.title || 'Rule', 80), purpose: clip(g.purpose, 300), members: (g.members || []).map(n => Number(n) - 1).filter(i => i >= 0 && i < rules.length && !used.has(i) && used.add(i)), text: String(g.text || '').trim() }))
     .filter(g => g.members.length).map(g => ({ ...g, text: g.text || rules[g.members[0]].text }));
@@ -165,7 +165,7 @@ Reply with only JSON: {"rules": [{"id": "the rule id above", "text": "the update
 // ---------- later-bucket wording for one rule from a best-practice agent ----------
 // The rule works for `from`; write how it should read in each later bucket. Pressure rises with the
 // bucket, using only the levers allowed. Rules that don't change with the bucket come back as same.
-async function bucketWording({ title, section, text, from, buckets, levers }) {
+async function bucketWording({ title, section, text, from, buckets, levers, signal }) {
   const req = `This rule comes from a live collections voice agent that works well in ${from.t}. Write how the SAME rule should read for each later DPD bucket below.
 Pressure rises with the bucket: later buckets are firmer, more direct and more urgent, with shorter turns and a payment-first ask. Keep it inside RBI Fair Practices: never threaten, never mention police, arrest, jail or contacting family or employer, never insult, never promise an outcome.
 The ONLY consequence and benefit lines you may use (each is true for this lender; add none of your own):
@@ -182,7 +182,7 @@ BUCKETS TO WRITE:
 ${buckets.map(b => `- ${b.id}: ${b.t} (${b.d}; firmness ${b.heat} of 6)`).join('\n')}
 
 Reply with only JSON: {"same": false, "byBucket": {"bucket id": "the rule for that bucket"}}`;
-  const r = await llm.json(req, { maxTokens: 6000, timeoutMs: 180000 });
+  const r = await llm.json(req, { maxTokens: 6000, timeoutMs: 180000, signal });
   const d = r.data || {};
   if (d.same) return { same: true, byBucket: {}, provider: r.provider };
   const ids = new Set(buckets.map(b => b.id));

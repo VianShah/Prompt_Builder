@@ -16,16 +16,24 @@ function parseJSON(text) {
   const err = new Error('The AI\'s reply was cut off or wasn\'t in the expected format. Try again.'); err.code = 'invalid_json'; err.publicMessage = err.message; err.raw = t.slice(0, 500); throw err;
 }
 
-async function withTimeout(fn, ms) {
+// A caller can pass its own AbortSignal (a Stop button): the request is cut off at once, and the error
+// says so (code "cancelled"), so nothing retries and no fallback provider is tried.
+const cancelled = () => Object.assign(new Error('Stopped.'), { code: 'cancelled', publicMessage: 'Stopped.' });
+async function withTimeout(fn, ms, outer) {
+  if (outer && outer.aborted) throw cancelled();
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), ms || TIMEOUT_MS);
-  try { return await fn(ctl.signal); } finally { clearTimeout(timer); }
+  const onAbort = () => ctl.abort();
+  if (outer) outer.addEventListener('abort', onAbort, { once: true });
+  try { return await fn(ctl.signal); }
+  catch (e) { if (outer && outer.aborted) throw cancelled(); throw e; }
+  finally { clearTimeout(timer); if (outer) outer.removeEventListener('abort', onAbort); }
 }
 
 // Bedrock Converse with a Bedrock API key (Authorization: Bearer). Model must be the inference
 // profile id (global.anthropic.claude-sonnet-5-5); the plain id is refused for on-demand use.
 // Throttling is retried with backoff.
-async function callClaude(prompt, { maxTokens, timeoutMs }) {
+async function callClaude(prompt, { maxTokens, timeoutMs, signal: outer }) {
   const url = `${process.env.BEDROCK_ENDPOINT || `https://bedrock-runtime.${config.claude.region}.amazonaws.com`}/model/${encodeURIComponent(config.claude.model)}/converse`;
   for (let attempt = 0; ; attempt++) {
     const out = await withTimeout(async signal => {
@@ -43,9 +51,10 @@ async function callClaude(prompt, { maxTokens, timeoutMs }) {
       if (!res.ok) throw Object.assign(new Error(`claude bedrock http ${res.status}`), { code: 'provider_error', detail: String(body.message || JSON.stringify(body)).slice(0, 300) });
       const parts = body.output && body.output.message && body.output.message.content;
       return { text: (parts || []).map(p => p.text || '').join('') };
-    }, timeoutMs);
+    }, timeoutMs, outer);
     if (!out.throttled) return out.text;
     if (attempt >= 4) throw Object.assign(new Error('claude bedrock throttled'), { code: 'provider_error', detail: 'ThrottlingException after retries' });
+    if (outer && outer.aborted) throw cancelled();
     await new Promise(r => setTimeout(r, 2000 * 2 ** attempt));
   }
 }
@@ -72,7 +81,7 @@ async function readImages(prompt, images, { maxTokens = 6000, timeoutMs } = {}) 
   }
 }
 
-async function callGlm(prompt, { maxTokens }) {
+async function callGlm(prompt, { maxTokens, signal: outer }) {
   return withTimeout(async signal => {
     const res = await fetch(`${config.glm.baseUrl}/chat/completions`, {
       method: 'POST', signal,
@@ -84,10 +93,10 @@ async function callGlm(prompt, { maxTokens }) {
     const body = await res.json().catch(() => ({}));
     if (!res.ok) throw Object.assign(new Error(`glm http ${res.status}`), { code: 'provider_error', detail: JSON.stringify(body).slice(0, 300) });
     return body.choices && body.choices[0] && body.choices[0].message ? body.choices[0].message.content : '';
-  });
+  }, undefined, outer);
 }
 
-async function callGemini(prompt, { maxTokens }) {
+async function callGemini(prompt, { maxTokens, signal: outer }) {
   return withTimeout(async signal => {
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${config.gemini.model}:generateContent?key=${config.gemini.apiKey}`;
     const res = await fetch(url, {
@@ -99,7 +108,7 @@ async function callGemini(prompt, { maxTokens }) {
     if (!res.ok) throw Object.assign(new Error(`gemini http ${res.status}`), { code: 'provider_error', detail: JSON.stringify(body).slice(0, 300) });
     const parts = body.candidates && body.candidates[0] && body.candidates[0].content && body.candidates[0].content.parts;
     return (parts || []).map(p => p.text || '').join('');
-  });
+  }, undefined, outer);
 }
 
 const PROVIDERS = {
@@ -110,15 +119,17 @@ const PROVIDERS = {
 
 function available() { return config.llmOrder.filter(p => PROVIDERS[p] && PROVIDERS[p].ok()); }
 
-async function json(prompt, { maxTokens = 8000, timeoutMs } = {}) {
+async function json(prompt, { maxTokens = 8000, timeoutMs, signal } = {}) {
+  if (signal && signal.aborted) throw cancelled();
   const order = available();
   if (!order.length) throw Object.assign(new Error('No LLM configured. Set AWS_BEARER_TOKEN_BEDROCK (Claude on Bedrock), GLM_BEDROCK_API_KEY or GEMINI_API_KEY.'), { code: 'no_llm' });
   let lastErr;
   for (const p of order) {
     try {
-      const text = await PROVIDERS[p].call(prompt, { maxTokens, timeoutMs });
+      const text = await PROVIDERS[p].call(prompt, { maxTokens, timeoutMs, signal });
       return { data: parseJSON(text), provider: PROVIDERS[p].label() };
     } catch (e) {
+      if (e.code === 'cancelled') throw e; // stopped by the caller: no fallback provider
       lastErr = e;
       console.warn(`[llm] ${p} failed: ${e.code || ''} ${e.message} ${e.detail || ''}`);
     }

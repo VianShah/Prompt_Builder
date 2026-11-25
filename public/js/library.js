@@ -222,35 +222,59 @@ function npReviewList(np, sk) {
 }
 
 // ---------- Library page ----------
+const keepOpen = k => (R.keepOpen && R.keepOpen[k] ? "open" : "");
+// The Sarvam versions of each ticked agent, so the one to learn from can be chosen. Latest is the default.
+R.agentVersions = R.agentVersions || {};
+async function libLoadVersions(type) {
+  const lib = libOf(type); if (!lib || !(R.sarvam && R.sarvam.hasToken && !R.sarvam.expired)) return;
+  const need = lib.agents.filter(a => a.bestPractice && !R.agentVersions[a.id]);
+  if (!need.length) return;
+  need.forEach(a => { R.agentVersions[a.id] = { loading: true, versions: [] }; });
+  await Promise.all(need.map(async a => { try { R.agentVersions[a.id] = await api("GET", `/agents/${a.id}/versions`); } catch (e) { R.agentVersions[a.id] = { error: e.message, versions: [] }; } }));
+  if (route() === "modules") render();
+}
+const usedLine = job => (job.used || []).length ? `<div class="small muted">Learned from: ${job.used.map(u => `${esc(u.agent)} · ${u.version ? `Sarvam v${u.version}` : "version unknown"} ${u.chosen ? "(chosen)" : u.latest ? "(latest)" : u.newest ? `<span style="color:var(--warn)">(not the latest: Sarvam has v${u.newest})</span>` : ""}`).join(" · ")}</div>` : "";
+function libJobLine(job) {
+  if (!job) return "";
+  if (job.state === "running") return `<div class="small">${esc(job.step || "Working")}… ${job.done} of ${job.total}</div><div class="bar" style="max-width:none;height:6px"><i style="width:${Math.round(100 * job.done / Math.max(1, job.total))}%"></i></div>${usedLine(job)}`;
+  const probs = (job.errors || []).length ? ` · <span style="color:var(--warn)">${job.errors.length} problem${job.errors.length === 1 ? "" : "s"}: ${esc(job.errors.slice(0, 2).join("; "))}</span>` : "";
+  if (job.state === "done") return `<div class="small muted">Last build: ${job.read} agent${job.read === 1 ? "" : "s"} read, ${job.created} new entries, ${job.updated} updated${job.wordingTotal != null ? `. Later-bucket wording: ${job.worded} written, ${job.wordingSame} the same in every bucket` : ""}${probs}.</div>${usedLine(job)}`;
+  if (job.state === "stopped") return `<div class="small"><b>Stopped.</b> ${job.created + job.updated ? `${job.created + job.updated} entr${job.created + job.updated === 1 ? "y" : "ies"} already saved ${job.created + job.updated === 1 ? "was" : "were"} kept.` : "Nothing was saved."}${probs}</div>${usedLine(job)}`;
+  if (job.state === "failed") return `<div class="small" style="color:var(--err)">The build failed: ${esc(job.error || "")}</div>`;
+  return "";
+}
 function viewLibraryPage() {
   if (R.modId && R.modDoc) return viewModule();
   const type = R.libType || "collections", lib = libOf(type);
   const tabs = `<div class="subtabs">${NP_TYPES.map(([k, l]) => `<button data-act="lib-type" data-type="${k}" aria-pressed="${k === type}">${l}</button>`).join("")}</div>`;
   if (!lib) return `<div class="view-head"><div><h1>Library</h1></div></div>${tabs}<div class="loading">Loading…</div>`;
   const sk = lib.skeleton && !lib.skeleton.starter ? lib.skeleton : null, prop = R.skDraft && R.skDraft.type === type ? R.skDraft : null, job = lib.job;
-  const withPrompt = lib.agents.filter(a => a.hasPrompt).length;
+  const withPrompt = lib.agents.filter(a => a.hasPrompt).length, nBest = lib.agents.filter(a => a.bestPractice && a.hasPrompt).length;
   const head = `<div class="view-head"><div><h1>Library</h1><p>The standard structure and the proven rules for ${npTypeT(type).toLowerCase()} agents. New prompts are built from them.</p></div>${sk ? `<a class="btn primary" href="#create" data-act="np-start" data-type="${type}">+ New ${npTypeT(type).toLowerCase()} prompt</a>` : ""}</div>${libLine()}`;
   // 1. structure
-  const skPanel = prop ? skEditor(prop) : sk ? `<details class="np-sec"><summary><b>Structure</b> <span class="small muted">· Greeting + ${sk.sections.length} sections, confirmed by ${esc((sk.confirmedBy || "").split("@")[0])}</span></summary>
+  const skPanel = prop ? skEditor(prop) : sk ? `<details class="np-sec" data-keep="libStructure" ${keepOpen("libStructure")}><summary><b>Structure</b> <span class="small muted">· Greeting + ${sk.sections.length} sections, confirmed by ${esc((sk.confirmedBy || "").split("@")[0])}</span></summary>
      <div class="small" style="margin-top:8px">Greeting · ${sk.sections.map(s => `${esc(s.title)}${s.mandatory ? "" : " (optional)"}`).join(" · ")}</div><div class="row" style="margin-top:8px"><button class="btn sm" data-act="sk-edit">Edit structure</button></div></details>`
-    : `<section class="np-sec"><h3>1 · Confirm the structure</h3><p class="small muted">Every ${npTypeT(type).toLowerCase()} prompt follows one structure: a Greeting, then the sections of the Instructions. ${withPrompt ? `The AI can read the ${withPrompt} ${npTypeT(type).toLowerCase()} agent${withPrompt === 1 ? "" : "s"} with a prompt and propose it.` : "No agent of this type has a prompt yet: draft it from the client's documents."}</p>
-     <div class="row" style="gap:8px">${withPrompt ? `<button class="btn primary ai" data-act="sk-derive">Derive from ${withPrompt} agent${withPrompt === 1 ? "" : "s"}</button>` : ""}<button class="btn ${withPrompt ? "" : "primary"} ai" data-act="lib-docs-toggle">Draft from documents</button><button class="btn ghost" data-act="sk-blank">Write it myself</button></div></section>`;
+    : `<section class="np-sec"><h3>1 · Confirm the structure</h3><p class="small muted">Every ${npTypeT(type).toLowerCase()} prompt follows one structure: a Greeting, then the sections of the Instructions. ${withPrompt ? (nBest ? `The AI reads only the ${nBest} agent${nBest === 1 ? "" : "s"} you ticked above, at ${nBest === 1 ? "its" : "their"} newest committed version, and proposes it.` : "Tick the agents to learn from above first: only ticked agents are read.") : "No agent of this type has a prompt yet: draft it from the client's documents."}</p>
+     <div class="row" style="gap:8px">${withPrompt ? (R.deriving === type ? `<button class="btn primary ai" disabled>Reading ${nBest} agent${nBest === 1 ? "" : "s"}…</button><button class="btn" data-act="sk-stop">Stop</button>` : `<button class="btn primary ai" data-act="sk-derive" ${nBest ? "" : "disabled"}>Derive from ${nBest} ticked agent${nBest === 1 ? "" : "s"}</button>`) : ""}<button class="btn ${withPrompt ? "" : "primary"} ai" data-act="lib-docs-toggle">Draft from documents</button><button class="btn ghost" data-act="sk-blank">Write it myself</button></div></section>`;
   // 2. fill
   const fill = sk ? `<section class="np-sec"><div class="row" style="justify-content:space-between"><div><h3>Rules</h3><p class="small muted">${lib.entries.length} entries${lib.builtins.length ? ` + ${lib.builtins.length} built-in blocks` : ""}. Extracted rules start as drafts; approve the ones that are right.</p></div>
-     <div class="row" style="gap:8px">${withPrompt ? `<button class="btn ai" data-act="lib-extract" ${job && job.state === "running" ? "disabled" : ""}>${lib.entries.length ? "Update" : "Build"} from ${withPrompt} agent${withPrompt === 1 ? "" : "s"}</button>` : ""}<button class="btn ai" data-act="lib-docs-toggle">Add from documents</button></div></div>
-     ${job && job.state === "running" ? `<div class="small">${esc(job.step || "Working")}… ${job.done} of ${job.total}</div><div class="bar" style="max-width:none;height:6px"><i style="width:${Math.round(100 * job.done / Math.max(1, job.total))}%"></i></div>` : job && job.state === "done" ? `<div class="small muted">Last build: ${job.read} agent${job.read === 1 ? "" : "s"} read, ${job.created} new entries, ${job.updated} updated${job.errors.length ? ` · <span style="color:var(--warn)">${job.errors.length} problem${job.errors.length === 1 ? "" : "s"}: ${esc(job.errors.slice(0, 2).join("; "))}</span>` : ""}.</div>` : job && job.state === "failed" ? `<div class="small" style="color:var(--err)">The build failed: ${esc(job.error || "")}</div>` : ""}
+     <div class="row" style="gap:8px"><button class="btn ai" data-act="lib-docs-toggle">Add from documents</button></div></div>
      ${sk.sections.map(s => { const es = lib.entries.filter(e => e.section === s.id), bs = lib.builtins.filter(b => b.section === s.id); return `<div class="lib-sec"><div class="np-sh"><h3>${esc(s.title)}</h3><span class="small muted">${es.length} entr${es.length === 1 ? "y" : "ies"}${bs.length ? ` · ${bs.length} built-in` : ""}</span></div>
        ${es.map(e => `<a class="lib-row" href="#" data-act="lib-entry" data-id="${e.id}"><span class="t">${esc(e.title)}</span><span class="small muted">${Object.keys(e.byBucket || {}).length ? `${Object.keys(e.byBucket).length} later-bucket wording${Object.keys(e.byBucket).length === 1 ? "" : "s"} · ` : e.bucketSame ? "same in every bucket · " : ""}${e.variantOf ? "variant · " : ""}${e.agents.length ? `${e.agents.length} agent${e.agents.length === 1 ? "" : "s"}` : e.origin === "refined" ? "refined" : ""}${e.alternatives ? ` · ${e.alternatives} other wording${e.alternatives === 1 ? "" : "s"}` : ""}</span>${statusPill(e.status)}</a>`).join("") || `<div class="small muted">No entries yet.</div>`}</div>`; }).join("")}</section>` : "";
   const docs = R.libDocs ? libDocsPanel(type, lib) : "";
   const best = lib.agents.filter(a => a.bestPractice), withP = lib.agents.filter(a => a.hasPrompt);
-  const bestPanel = `<section class="np-sec" id="bestPanel"><div><h3>Best-practice agents</h3><p class="small muted">Tick the ${npTypeT(type).toLowerCase()} agents that work best${type === "collections" ? ", and the bucket each one works" : ""}. Extraction learns only from these${type === "collections" ? ", then writes firmer wording of each section for the later buckets" : ""}. ${best.length ? `${best.length} chosen.` : "None chosen yet: extraction would read every agent."}</p></div>
-    ${withP.length ? `<div class="stack" style="gap:6px">${withP.map(a => `<div class="row" style="gap:10px;justify-content:space-between"><label class="check" style="flex:1"><input type="checkbox" data-act-check="best" data-id="${esc(a.id)}" ${a.bestPractice ? "checked" : ""} ${canDo("approve") ? "" : "disabled"}> ${esc(a.name)} <span class="small muted">${esc(a.client || "")}</span></label>${type === "collections" ? `<select data-act-change="best-bucket" data-id="${esc(a.id)}" style="width:auto" ${canDo("approve") ? "" : "disabled"}>${BUCKETS.filter(x => !x.legacy).map(x => `<option value="${x.id}" ${x.id === (a.bucket || "b1") ? "selected" : ""}>${esc(x.short)}</option>`).join("")}</select>` : ""}</div>`).join("")}</div>
-     ${sk ? `<div class="row" style="gap:8px"><button class="btn primary ai" data-act="lib-extract" ${job && job.state === "running" ? "disabled" : ""}>Extract best practices from ${best.length || withP.length} agent${(best.length || withP.length) === 1 ? "" : "s"}</button>${type === "collections" && lib.entries.length ? `<button class="btn ai" data-act="lib-wording" ${job && job.state === "running" ? "disabled" : ""}>Write later-bucket wording</button>` : ""}</div>` : `<div class="small muted">Confirm the structure below first.</div>`}
-     ${job && job.state === "done" && job.wordingTotal != null ? `<div class="small muted">Later-bucket wording: ${job.worded} section${job.worded === 1 ? "" : "s"} written, ${job.wordingSame} read the same in every bucket.</div>` : ""}`
+  const running = job && job.state === "running";
+  const vSel = a => { if (!a.bestPractice) return ""; const V = R.agentVersions[a.id] || {}, newest = V.newest || a.newest, vs = V.versions || [];
+    return `<select data-act-change="best-version" data-id="${esc(a.id)}" style="width:auto" ${canDo("approve") && !running ? "" : "disabled"} title="Which Sarvam version to learn from. Latest always means the newest committed version.">
+      <option value="">Latest${newest ? ` (v${newest})` : ""}</option>${vs.filter(v => v !== newest).map(v => `<option value="${v}" ${a.bestVersion === v ? "selected" : ""}>v${v} (older)</option>`).join("")}${a.bestVersion && a.bestVersion !== newest && !vs.includes(a.bestVersion) ? `<option value="${a.bestVersion}" selected>v${a.bestVersion} (older)</option>` : ""}</select>`; };
+  const bestPanel = `<section class="np-sec" id="bestPanel"><div><h3>Best-practice agents</h3><p class="small muted">Tick the ${npTypeT(type).toLowerCase()} agents that work best${type === "collections" ? ", and the bucket each one works" : ""}. Only ticked agents are read${type === "collections" ? ", and the Library then writes firmer wording of each section for the later buckets" : ""}. Each is read at its newest committed version in Sarvam, unless you pick an older one. ${nBest ? `${nBest} ticked.` : "None ticked yet."}</p></div>
+    ${withP.length ? `<div class="stack" style="gap:6px">${withP.map(a => `<div class="row" style="gap:10px;justify-content:space-between"><label class="check" style="flex:1"><input type="checkbox" data-act-check="best" data-id="${esc(a.id)}" ${a.bestPractice ? "checked" : ""} ${canDo("approve") && !running ? "" : "disabled"}> ${esc(a.name)} <span class="small muted">${esc(a.client || "")}</span></label><span class="row" style="gap:6px">${vSel(a)}${type === "collections" ? `<select data-act-change="best-bucket" data-id="${esc(a.id)}" style="width:auto" ${canDo("approve") && !running ? "" : "disabled"}>${BUCKETS.filter(x => !x.legacy).map(x => `<option value="${x.id}" ${x.id === (a.bucket || "b1") ? "selected" : ""}>${esc(x.short)}</option>`).join("")}</select>` : ""}</span></div>`).join("")}</div>
+     ${sk ? `<div class="row" style="gap:8px"><button class="btn primary ai" data-act="lib-extract" ${running || !nBest ? "disabled" : ""}>${nBest ? `Extract best practices from ${nBest} agent${nBest === 1 ? "" : "s"}` : "Tick at least one agent"}</button>${type === "collections" && lib.entries.length && nBest ? `<button class="btn ai" data-act="lib-wording" ${running ? "disabled" : ""}>Write later-bucket wording</button>` : ""}${running ? `<button class="btn" data-act="lib-stop" ${job.cancel ? "disabled" : ""}>${job.cancel ? "Stopping…" : "Stop"}</button>` : ""}</div>` : `<div class="small muted">Confirm the structure below first.</div>`}
+     ${libJobLine(job)}`
     : `<div class="small muted">No ${npTypeT(type).toLowerCase()} agent has a prompt loaded yet. Connect Sarvam on the Agents page: prompts load by themselves.</div>`}</section>`;
   // agents and their type
   const others = (R.agents || []).filter(a => a.sarvamAppId);
-  const agentsPanel = `<details class="np-sec"><summary><b>Agents and their type</b> <span class="small muted">· ${lib.agents.length} ${npTypeT(type).toLowerCase()}</span></summary><div class="stack" style="gap:6px;margin-top:10px">
+  const agentsPanel = `<details class="np-sec" data-keep="libAgents" ${keepOpen("libAgents")}><summary><b>Agents and their type</b> <span class="small muted">· ${lib.agents.length} ${npTypeT(type).toLowerCase()}</span></summary><div class="stack" style="gap:6px;margin-top:10px">
     ${others.map(a => `<div class="row" style="justify-content:space-between"><span>${esc(a.name)} <span class="small muted">${esc(a.client || "")}</span></span>${canDo("approve") ? npSegAgent(a) : `<span class="small muted">${npTypeT(a.agentType || "collections")}</span>`}</div>`).join("") || `<div class="small muted">No agents loaded. Refresh on the Agents page.</div>`}</div></details>`;
   return head + tabs + `<div class="stack">${bestPanel}${skPanel}${docs}${fill}${agentsPanel}</div>`;
 }
@@ -288,7 +312,6 @@ Object.assign(ACT, {
         if (v === "sales") { np.info.bucket = ""; np.info.callingAs = ""; } else { np.info.bucket = np.info.bucket || "b1"; np.info.callingAs = np.info.callingAs || "lender"; } commit(); }).catch(e => toast(e.message)); return; }
     np.info[k] = v; commit(); },
   "np-lever": el => { const i = npState().info, l = el.dataset.l, cur = Array.isArray(i.levers) ? i.levers : [...DEFAULT_LEVERS]; i.levers = cur.includes(l) ? cur.filter(x => x !== l) : [...cur, l]; commit(); },
-  "best-toggle": el => run(el, async () => { await api("PATCH", `/agents/${el.dataset.id}`, { bestPractice: el.dataset.on === "1" }); await loadAgents(true); await loadLibType(R.libType || "collections", true); render(); }),
   "lib-wording": el => run(el, async () => { const type = R.libType || "collections"; libOf(type).job = await api("POST", `/library/${type}/bucket-wording/start`); render(); pollLib(type); }),
   "np-lang": el => { const i = npState().info, l = el.dataset.l; i.languages = i.languages.includes(l) ? i.languages.filter(x => x !== l) : [...i.languages, l]; commit(); },
   "np-src": el => { npState().source.kind = el.dataset.k; commit(); },
@@ -299,7 +322,7 @@ Object.assign(ACT, {
       const r = await api("POST", `/library/${type}/source`, { agentId: np.source.agentId });
       Object.entries(r.sections).forEach(([sec, list]) => list.forEach(x => npAdd(np, sec, { text: x.text, title: x.title || "", from: x.from })));
       np.greeting = r.greeting || np.greeting; np.sourceAgent = r.agent;
-      toast(`${r.agent.name}'s prompt is in place${r.via === "ai" ? " (sections placed by the AI)" : ""}.`);
+      toast(`${r.agent.name}'s prompt is in place${r.sarvamVersion ? ` (Sarvam v${r.sarvamVersion}${r.fresher ? ", newer than the builder's copy" : ""})` : ""}${r.via === "ai" ? " (sections placed by the AI)" : ""}.`);
     } else np.sourceAgent = null;
     np.step = 2; R.npReview = null; commit(); window.scrollTo(0, 0);
   }, "Loading…"),
@@ -411,10 +434,18 @@ Object.assign(ACT, {
   }, "Saving…"),
   "np-start": el => { const np = npState(); if (np.info.type !== el.dataset.type) { L.np = null; npState().info.type = el.dataset.type; } saveLocal(); },
   // library page
-  "lib-type": el => { R.libType = el.dataset.type; R.skDraft = null; R.libDocs = false; render(); loadLibType(el.dataset.type).then(render).catch(e => toast(e.message)); },
+  "lib-type": el => { R.libType = el.dataset.type; R.skDraft = null; R.libDocs = false; render(); loadLibType(el.dataset.type).then(() => { render(); libLoadVersions(el.dataset.type); }).catch(e => toast(e.message)); },
   "lib-open": el => { R.libType = el.dataset.type; },
   "lib-entry": el => run(el, async () => { await loadMod(el.dataset.id); render(); window.scrollTo(0, 0); }),
-  "sk-derive": el => run(el, async () => { const type = R.libType || "collections"; const r = await api("POST", `/library/${type}/skeleton/derive`); R.skDraft = { type, ...r }; render(); }, "Reading the agents…"),
+  "sk-derive": el => run(el, async () => {
+    const type = R.libType || "collections"; R.deriving = type; R.deriveCtl = new AbortController(); render();
+    try { const r = await api("POST", `/library/${type}/skeleton/derive`, undefined, { signal: R.deriveCtl.signal }); R.skDraft = { type, ...r };
+      toast(`Structure proposed from ${(r.learnedFrom || []).map(u => `${u.agent}${u.version ? ` v${u.version}` : ""}`).join(", ")}.${(r.notes || []).length ? ` ${r.notes[0]}` : ""}`); }
+    catch (e) { if (e.name === "AbortError") toast("Stopped. Nothing was changed."); else throw e; }
+    finally { R.deriving = null; R.deriveCtl = null; render(); }
+  }, "Reading the agents…"),
+  "sk-stop": () => { if (R.deriveCtl) R.deriveCtl.abort(); },
+  "lib-stop": el => run(el, async () => { const type = R.libType || "collections"; libOf(type).job = await api("POST", `/library/${type}/extract/stop`); render(); }, "Stopping…"),
   "sk-blank": () => { const type = R.libType || "collections"; const st = JSON.parse(JSON.stringify(libOf(type).skeleton)); delete st.starter; R.skDraft = { type, ...st }; render(); },
   "sk-edit": () => { const type = R.libType || "collections"; R.skDraft = { type, ...JSON.parse(JSON.stringify(libOf(type).skeleton)) }; delete R.skDraft.starter; render(); },
   "sk-cancel": () => { R.skDraft = null; render(); },
@@ -433,7 +464,14 @@ Object.assign(ACT, {
     if (r.skeleton) { R.skDraft = { type, ...r.skeleton, rules: r.rules }; toast("Check the proposed structure, then confirm it."); }
     else { await loadLibType(type, true); toast(`${r.created} new rule${r.created === 1 ? "" : "s"} added to the library as drafts.`); }
     render(); }, "Reading the documents…"),
-  "agent-type": el => run(el, async () => { await api("PATCH", `/agents/${el.dataset.id}`, { agentType: el.dataset.v }); await loadAgents(true); await Promise.all(NP_TYPES.map(([t]) => loadLibType(t, true))); render(); }),
+  // After switching an agent's type the lists above change height. Keep the row you clicked where it was on
+  // screen, so the next agent is right where you expect it.
+  "agent-type": el => run(el, async () => {
+    const id = el.dataset.id, top = el.getBoundingClientRect().top;
+    await api("PATCH", `/agents/${id}`, { agentType: el.dataset.v }); await loadAgents(true); await Promise.all(NP_TYPES.map(([t]) => loadLibType(t, true))); render();
+    const again = document.querySelector(`details[data-keep="libAgents"] button[data-act="agent-type"][data-id="${CSS.escape(id)}"]`);
+    if (again) window.scrollBy(0, again.getBoundingClientRect().top - top);
+  }),
 });
 async function pollLib(type) {
   for (;;) { await new Promise(r => setTimeout(r, 2000)); let j; try { j = await api("GET", `/library/${type}/extract/status`); } catch (_) { return; }
@@ -456,7 +494,7 @@ document.addEventListener("change", e => {
 
 // Routes: New prompt and the Library page replace the 10-step wizard and the module list.
 ROUTES.create = { view: viewNewPrompt, load: async () => { await loadAgents(); await loadLibType(npState().info.type); } };
-ROUTES.modules = { view: viewLibraryPage, load: async () => { await Promise.all([loadAgents(true), loadPrompts(true)]); const mr = await api("GET", "/modules"); R.lib = mr.library; await loadLibType(R.libType || "collections", true); if (R.modId) await loadMod(R.modId); const j = libOf(R.libType || "collections").job; if (j && j.state === "running") pollLib(R.libType || "collections"); } };
+ROUTES.modules = { view: viewLibraryPage, load: async () => { await Promise.all([loadAgents(true), loadPrompts(true), api("GET", "/sarvam/status").then(r => R.sarvam = r).catch(() => R.sarvam = null)]); const mr = await api("GET", "/modules"); R.lib = mr.library; await loadLibType(R.libType || "collections", true); libLoadVersions(R.libType || "collections"); if (R.modId) await loadMod(R.modId); const j = libOf(R.libType || "collections").job; if (j && j.state === "running") pollLib(R.libType || "collections"); } };
 
 // Tab in an empty box whose grey example starts with "e.g." puts the example in as real text.
 const exampleOf = el => { const ph = el && el.getAttribute && el.getAttribute("placeholder"); const m = ph && ph.match(/e\.g\.?,?\s*([\s\S]+)$/i); return m ? m[1].replace(/[…]+\s*$/, "").trim() : null; };

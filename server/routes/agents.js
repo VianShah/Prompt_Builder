@@ -591,10 +591,26 @@ r.post('/prompts/:id/create-agent', h(async (req, res) => {
 }));
 
 // Link a UAT (test) agent: approved changes go there first, then are promoted to this agent.
+// The committed versions an agent has in Sarvam, newest first (for choosing which one to learn from).
+const verCache = new Map();
+r.get('/agents/:id/versions', h(async (req, res) => {
+  const a = await db.get('agents', req.params.id);
+  if (!a || !a.sarvamAppId) throw fail(404, 'Unknown agent.');
+  const hit = verCache.get(a.id);
+  if (hit && Date.now() - hit.at < 5 * 60 * 1000 && !req.query.fresh) return res.json({ versions: hit.versions, newest: hit.versions[0] || null, cached: true });
+  const st = await sarvam.status();
+  if (!st.hasToken || st.expired) throw fail(409, 'Connect Sarvam to see the versions.');
+  const versions = (await sarvam.committedVersions(a.sarvamAppId)).reverse();
+  verCache.set(a.id, { at: Date.now(), versions });
+  res.json({ versions, newest: versions[0] || null });
+}));
+
 r.patch('/agents/:id', h(async (req, res) => {
   if (!can(req.user, 'approve')) throw fail(403, 'Only approvers and admins can change this.');
   const a = await loadAgent(req.params.id);
-  const { uatAgentId, template, templateNote, agentType, bestPractice, bucket } = req.body || {};
+  const { uatAgentId, template, templateNote, agentType, bestPractice, bucket, bestVersion } = req.body || {};
+  // Which Sarvam version the Library learns from. Empty means the newest committed one, always.
+  if (bestVersion !== undefined) { const n = Number(bestVersion); if (bestVersion === null || bestVersion === '' || bestVersion === 'latest') a.bestVersion = null; else if (Number.isInteger(n) && n > 0) a.bestVersion = n; else throw fail(400, 'Pick a committed version number, or Latest.'); }
   // Best practice: this agent's prompt is a standard the Library learns from, for the bucket it works.
   if (bestPractice !== undefined) {
     if (bestPractice && !(await db.list('prompts')).some(p => p.agentId === a.id)) throw fail(409, 'Load this agent\'s prompt first, then mark it as best practice.');
@@ -615,7 +631,7 @@ r.patch('/agents/:id', h(async (req, res) => {
     a.templateBy = template ? req.user.email : null; a.templateAt = template ? now() : null;
   }
   await db.put('agents', a);
-  await audit(req.user, 'agent.update', { agent: a.id, uatAgentId: a.uatAgentId, template: a.template, agentType: a.agentType, bestPractice: !!a.bestPractice, bucket: a.bucket });
+  await audit(req.user, 'agent.update', { agent: a.id, uatAgentId: a.uatAgentId, template: a.template, agentType: a.agentType, bestPractice: !!a.bestPractice, bucket: a.bucket, bestVersion: a.bestVersion || null });
   res.json(a);
 }));
 
