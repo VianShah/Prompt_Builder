@@ -19,6 +19,18 @@ module.exports = {
   // require a second person (the author then can't approve their own version or module).
   selfApprove: process.env.SELF_APPROVE !== 'false',
   users: parseUsers(process.env.BUILDER_USERS),
+  // Main model: Sarvam 105B (128K context) through Sarvam's chat completions API.
+  // reasoning: none | low | medium | high. Reasoning tokens count toward max_tokens, so each call gets
+  // headroom on top of the output it needs, capped at maxTokens.
+  sarvamLlm: {
+    apiKey: process.env.SARVAM_LLM_API_KEY || '',
+    model: process.env.SARVAM_LLM_MODEL || 'sarvam-105b',
+    url: process.env.SARVAM_LLM_URL || 'https://api.sarvam.ai/v1/chat/completions',
+    reasoning: process.env.SARVAM_LLM_REASONING || 'auto', // auto | none | low | medium | high
+    maxTokens: Number(process.env.SARVAM_LLM_MAX_TOKENS) || 32000,
+  },
+  // Bedrock (Claude) is a fallback only when switched on: LLM_BEDROCK_FALLBACK=on. Off by default.
+  bedrockFallback: /^(on|true|1|yes)$/i.test(process.env.LLM_BEDROCK_FALLBACK || ''),
   // Claude Sonnet 5.5 on the team's AWS Bedrock (ap-south-1), via a Bedrock API key. Requests are
   // served from AWS regions worldwide (global profile): don't send data that must stay in India.
   claude: {
@@ -36,7 +48,7 @@ module.exports = {
     apiKey: process.env.GEMINI_API_KEY || '',
     model: process.env.GEMINI_MODEL || 'gemini-2.5-flash',
   },
-  llmOrder: list(process.env.LLM_ORDER, 'claude,glm,gemini'),
+  llmOrder: list(process.env.LLM_ORDER, 'sarvam'),
   // How an approved prompt reaches Sarvam. "manual" = copy into Sarvam Canvas, commit, then confirm here.
   sarvamPush: process.env.SARVAM_PROMPT_PUSH || 'manual',
   // Reading live instructions from Sarvam (org and workspace ids from the Sarvam URL). The login token is pasted in the UI.

@@ -27,7 +27,15 @@ services:
         generateValue: true
       - key: BUILDER_USERS
         sync: false
-      # Claude Sonnet 5.5 on Bedrock is the main model; GLM and Gemini are fallbacks.
+      # Sarvam 105B is the main model. Bedrock (Claude) is a fallback only when LLM_BEDROCK_FALLBACK=on.
+      - key: SARVAM_LLM_API_KEY
+        sync: false
+      - key: SARVAM_LLM_MODEL
+        value: sarvam-105b
+      - key: SARVAM_LLM_REASONING
+        value: auto
+      - key: LLM_BEDROCK_FALLBACK
+        value: "off"
       - key: AWS_BEARER_TOKEN_BEDROCK
         sync: false
       - key: BEDROCK_REGION
@@ -39,7 +47,7 @@ services:
       - key: GLM_BEDROCK_API_KEY
         sync: false
       - key: LLM_ORDER
-        value: claude,glm,gemini
+        value: sarvam
       # Sarvam workspace (MCP sign-in reads/pushes prompts) and the Voice Agents API key (calls tab).
       - key: SARVAM_ORG_ID
         sync: false

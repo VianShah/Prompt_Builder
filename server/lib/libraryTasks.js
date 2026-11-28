@@ -50,30 +50,47 @@ ${list.map((p, i) => `=== AGENT ${i + 1}: ${clip(p.agent, 120)} ===\nGREETING: $
 
 // ---------- extract one agent's rules ----------
 const secLine = s => `- ${s.id}: ${s.title}${s.aliases && s.aliases.length ? ` (also called: ${s.aliases.join(', ')})` : ''}${s.desc ? ` — ${s.desc}` : ''}`;
+// Long prompts are read in parts (split at headings), so each reply fits the model's output limit.
+const EXTRACT_PART = 30000;
+function splitAtHeadings(T, max) {
+  if (T.length <= max) return [T];
+  const blocks = T.split(/\n(?=#{1,4} )/), parts = [];
+  let cur = '';
+  for (const b of blocks) {
+    if (cur && cur.length + b.length + 1 > max) { parts.push(cur); cur = ''; }
+    if (b.length > max) { for (let k = 0; k < b.length; k += max) parts.push(b.slice(k, k + max)); continue; }
+    cur = cur ? `${cur}\n${b}` : b;
+  }
+  if (cur) parts.push(cur);
+  return parts;
+}
 async function extractRules({ skeleton, agent, client, text, signal }) {
-  const T = String(text || '');
-  const req = `Split this voice agent's prompt into RULES and place each in a section of the standard structure below.
+  const T = String(text || '').slice(0, 150000), parts = splitAtHeadings(T, EXTRACT_PART);
+  const ids = new Set(skeleton.sections.map(s => s.id));
+  let rules = [], provider = null;
+  for (let n = 0; n < parts.length; n++) {
+    const req = `Split this voice agent's prompt into RULES and place each in a section of the standard structure below.
 A rule is one self-contained instruction or step (a short paragraph or a few lines). Keep the agent's wording and language exactly (Hindi stays Hindi), but replace the client's company name with [[client_name]], the agent's own name with [[agent_name]], and other client-only fixed facts (product names, helpline numbers, fees) with [[snake_case]] placeholders. Keep {{call_variables}} exactly as written. Remove references to the prompt's own numbering ("as in rule 7").
-Cover the whole prompt: every instruction ends up in exactly one rule. Skip only headings.
+Cover the whole ${parts.length > 1 ? 'part' : 'prompt'}: every instruction ends up in exactly one rule. Skip only headings.
 "title" is a 2–6 word name for what the rule governs (e.g. "Identity check before details", "Partial payment ladder").
-"source" is the exact passage the rule came from, copied character for character.
 
 STANDARD SECTIONS:
 ${skeleton.sections.map(secLine).join('\n')}
 
 AGENT: ${clip(agent, 120)}${client ? ` (client: ${clip(client, 80)})` : ''}
-PROMPT (${T.length} characters):
+${parts.length > 1 ? `PART ${n + 1} OF ${parts.length} OF THE PROMPT` : 'PROMPT'} (${parts[n].length} characters):
 <<<
-${T.slice(0, 150000)}
+${parts[n]}
 >>>
 
-Reply with only JSON: {"rules": [{"section": "section id", "title": "", "text": "", "source": ""}]}`;
-  const r = await llm.json(req, { maxTokens: 24000, timeoutMs: 420000, signal });
-  const ids = new Set(skeleton.sections.map(s => s.id));
-  const rules = ((r.data && r.data.rules) || []).filter(x => x && String(x.text || '').trim()).map(x => ({
-    section: ids.has(x.section) ? x.section : skeleton.sections[0].id, title: clip(x.title || 'Rule', 80), text: String(x.text).trim(), source: clip(x.source, 4000),
-  })).slice(0, 120);
-  return { rules, provider: r.provider };
+Reply with only JSON: {"rules": [{"section": "section id", "title": "", "text": ""}]}`;
+    const r = await llm.json(req, { maxTokens: 16000, timeoutMs: 420000, signal });
+    provider = r.provider;
+    rules = rules.concat(((r.data && r.data.rules) || []).filter(x => x && String(x.text || '').trim()).map(x => ({
+      section: ids.has(x.section) ? x.section : skeleton.sections[0].id, title: clip(x.title || 'Rule', 80), text: String(x.text).trim(),
+    })));
+  }
+  return { rules: rules.slice(0, 200), provider, parts: parts.length };
 }
 
 // ---------- merge near-duplicates across agents (one section at a time) ----------
@@ -168,8 +185,9 @@ Reply with only JSON: {"rules": [{"id": "the rule id above", "text": "the update
 async function bucketWording({ title, section, text, from, buckets, levers, signal }) {
   const req = `This rule comes from a live collections voice agent that works well in ${from.t}. Write how the SAME rule should read for each later DPD bucket below.
 Pressure rises with the bucket: later buckets are firmer, more direct and more urgent, with shorter turns and a payment-first ask. Keep it inside RBI Fair Practices: never threaten, never mention police, arrest, jail or contacting family or employer, never insult, never promise an outcome.
-The ONLY consequence and benefit lines you may use (each is true for this lender; add none of your own):
-${levers.map(l => `- ${l.t}${l.stick ? `: "${l.stick}"` : ''}${l.carrot ? ` / benefit: "${l.carrot}"` : ''} (from ${l.fromBucket})`).join('\n')}
+The ONLY consequence and benefit lines you may use, from least to most serious (each is true for this lender; add none of your own; keep [[client_name]] as written):
+${levers.map((l, i) => `${i + 1}. ${l.t}${l.stick ? `: "${l.stick.replace(/\[client\]/g, '[[client_name]]')}"` : ''}${l.carrot ? ` / benefit: "${l.carrot}"` : ''} (allowed from ${l.fromBucket})`).join('\n')}
+Escalation: a bucket may use only the lines allowed by that bucket. Each later bucket must use a consequence at least as serious as the bucket before it, and the latest buckets the most serious allowed (never a milder line at NPA than at Bucket 3). The payment ask gets tighter too: later buckets ask for payment today.
 Keep the rule's purpose, structure, every {{variable}} and [[placeholder]] exactly, and its language and script (Hindi stays Hindi).
 If this rule should read the same in every bucket (identity checks, compliance, speech or language rules), reply {"same": true}.
 
